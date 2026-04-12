@@ -301,14 +301,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MENSAJES DE TEXTO (respuestas)
 # ------------------------------------
 
+CONFIRMACIONES = {
+    'semanal': (
+        "\u2705 *Reflexi\u00f3n semanal guardada\\.* \U0001f4aa\n\n"
+        "_Lo que se mide, mejora\\. Esta semana ya qued\u00f3 registrada\\._\n"
+        "_El lunes empieza desde aqu\u00ed\\._"
+    ),
+    'mensual': (
+        "\u2705 *Reflexi\u00f3n mensual guardada\\.* \U0001f9e0\n\n"
+        "_Un mes m\u00e1s consciente es un a\u00f1o diferente\\._\n"
+        "_Sigue siendo honesto contigo mismo\\._"
+    ),
+    'capital': (
+        "\u2705 *Divisi\u00f3n de capital guardada\\.* \U0001f4b0\n\n"
+        "_Decidir a d\u00f3nde va tu dinero antes de gastarlo_\n"
+        "_es lo que separa al Ra\u00fal de hoy del Ra\u00fal del futuro\\._"
+    ),
+}
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tipo = get_esperando()
     if tipo:
         guardar_registro(tipo, update.message.text)
         fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
+        confirmacion = CONFIRMACIONES.get(
+            tipo,
+            "\u2705 *Guardado\\.*\n\n_Cada acci\u00f3n a tiempo cuenta\\._"
+        )
         await update.message.reply_text(
-            f"\u2705 *Guardado* \\({escape_md(tipo)}\\) \u2014 {fecha}\n\n"
-            "_Sigue adelante\\. Cada registro es un paso\\._ \U0001f4aa",
+            f"{confirmacion}\n\n\u23f0 _{fecha}_",
             parse_mode='MarkdownV2',
             reply_markup=menu_keyboard()
         )
