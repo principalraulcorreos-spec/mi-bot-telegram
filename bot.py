@@ -1269,6 +1269,14 @@ async def cmd_notas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notas = load_data().get("notas", [])
     await update.message.reply_text(mostrar_notas(notas), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
+async def cmd_gmail_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not os.environ.get("GMAIL_CLIENT_ID"):
+        await update.message.reply_text("Gmail no está configurado\\.", parse_mode='MarkdownV2')
+        return
+    await update.message.reply_text("🔍 _Revisando Gmail\\.\\.\\._", parse_mode='MarkdownV2')
+    await job_gmail_check(context)
+    await update.message.reply_text("✅ _Revisión completada\\._", parse_mode='MarkdownV2')
+
 # ------------------------------------
 # CALLBACK DE BOTONES
 # ------------------------------------
@@ -1848,8 +1856,9 @@ def main():
     app.add_handler(CommandHandler("gastos",    cmd_gastos))
     app.add_handler(CommandHandler("como_voy",  cmd_como_voy))
     app.add_handler(CommandHandler("trades",    cmd_trades))
-    app.add_handler(CommandHandler("notas",     cmd_notas))
-    app.add_handler(CommandHandler("cancelar",  cmd_cancelar))
+    app.add_handler(CommandHandler("notas",        cmd_notas))
+    app.add_handler(CommandHandler("cancelar",     cmd_cancelar))
+    app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
