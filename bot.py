@@ -25,7 +25,7 @@ DATA_FILE = os.path.join(DATA_DIR, "registro.json")
 # ------------------------------------
 
 SEMANAL = (
-    "\U0001f6a8 *\u00bfES JUEVES POR LA NOCHE\\?*\n"
+    "\u26a1 *RA\u00daL \u2014 \u00bfC\u00d3MO FUE TU SEMANA?*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
     "\U0001f4ca *RETROALIMENTACI\u00d3N SEMANAL*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
@@ -58,7 +58,7 @@ SEMANAL = (
 )
 
 MENSUAL = (
-    "\U0001f6a8 *\u00bfES EL \u00daLTIMO VIERNES DEL MES\\?*\n"
+    "\U0001f525 *RA\u00daL \u2014 EL MES SE CERR\u00d3\\. \u00bfQU\u00c9 APRENDISTE?*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
     "\U0001f9e0 *REFLEXI\u00d3N MENSUAL*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
@@ -89,7 +89,7 @@ MENSUAL = (
 )
 
 CAPITAL = (
-    "\U0001f6a8 *\u00bfES D\u00cdA 1 DEL MES\\?*\n"
+    "\U0001f4b0 *RA\u00daL \u2014 TU DINERO DEL MES ESPERA \u00d3RDENES*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
     "\U0001f4b0 *DIVISI\u00d3N DE CAPITAL*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
@@ -106,7 +106,7 @@ CAPITAL = (
 )
 
 PEDIR_INFORME = (
-    "\U0001f6a8 *RECORDATORIO: PEDIR INFORMES*\n"
+    "\U0001f4f2 *RA\u00daL \u2014 PIDE LOS INFORMES HOY*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
     "\U0001f4f1 Manda este WhatsApp a los hermanos *ahora*:\n\n"
     "_\"Hermanos, ya es fin de mes\\. Por favor env\u00edenme su informe cuando puedan\\. Gracias\\.\"_\n\n"
@@ -115,7 +115,7 @@ PEDIR_INFORME = (
 )
 
 ENVIAR_INFORME = (
-    "\U0001f6a8 *\u00daLTIMO D\u00cdA \u2014 ENVIAR INFORME*\n"
+    "\U0001f6a8 *RA\u00daL \u2014 HOY ES EL L\u00cdMITE\\. ENV\u00cdA EL INFORME*\n"
     "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
     "\u26a0\ufe0f Hoy es el d\u00eda 4\\. *L\u00edmite hoy\\.* \u26a0\ufe0f\n\n"
     "Recopila los informes recibidos y env\u00edalos\n"
