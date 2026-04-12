@@ -1446,6 +1446,69 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='MarkdownV2'
         )
 
+    elif data.startswith('gf:'):
+        # Formato: gf:{short_email_id}:{categoria}
+        parts = data.split(':', 2)
+        if len(parts) < 3:
+            return
+        short_id = parts[1]
+        categoria = parts[2]
+
+        d = load_data()
+        pending = d.get("gmail_pending", {})
+        tx = pending.get(short_id)
+        if not tx:
+            await query.answer("Esta transacción ya fue procesada.")
+            return
+
+        if categoria == '_skip':
+            pending.pop(short_id, None)
+            d["gmail_pending"] = pending
+            save_data(d)
+            await query.message.edit_text("❌ _Transacción ignorada\\._", parse_mode='MarkdownV2')
+            return
+
+        if categoria == '_ingreso':
+            # Registrar como nota de ingreso, no como gasto
+            monto = tx.get("monto", 0)
+            desc  = tx.get("descripcion", tx.get("subject", "ingreso"))
+            nota  = f"INGRESO: ${monto:,.2f} — {desc}"
+            guardar_nota(nota)
+            pending.pop(short_id, None)
+            d["gmail_pending"] = pending
+            save_data(d)
+            monto_esc = escape_md(f"${monto:,.2f}")
+            desc_esc  = escape_md(desc[:60])
+            await query.message.edit_text(
+                f"💰 *Ingreso registrado en notas*\n_{monto_esc} — {desc_esc}_",
+                parse_mode='MarkdownV2'
+            )
+            return
+
+        # Registrar como gasto
+        monto = tx.get("monto", 0)
+        cat_norm = CATEGORIAS_ALIAS.get(categoria, categoria)
+        if cat_norm not in PRESUPUESTO:
+            cat_norm = "otros"
+
+        cat_guardada = registrar_gasto(monto, cat_norm)
+        pending.pop(short_id, None)
+        d["gmail_pending"] = pending
+        save_data(d)
+
+        total_cat = sum(g["cantidad"] for g in get_gastos_mes() if g["categoria"] == cat_guardada)
+        presup    = PRESUPUESTO.get(cat_guardada)
+        cat_esc   = escape_md(cat_guardada.capitalize())
+        pct_txt   = f" \\({total_cat/presup*100:.0f}% del mes\\)" if presup else ""
+        monto_esc = escape_md(f"${monto:,.2f}")
+        await query.message.edit_text(
+            f"✅ *{monto_esc} en {cat_esc} registrado*\n_{cat_esc} este mes: ${total_cat:.0f}{pct_txt}_",
+            parse_mode='MarkdownV2'
+        )
+        alert = check_budget_alert(cat_guardada)
+        if alert:
+            await query.message.reply_text(alert, parse_mode='MarkdownV2')
+
 # ------------------------------------
 # HANDLER DE MENSAJES
 # ------------------------------------
@@ -1502,6 +1565,274 @@ async def job_habitos(context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ------------------------------------
+# GMAIL — DETECCIÓN DE TRANSACCIONES
+# ------------------------------------
+
+def _get_gmail_service(refresh_token: str):
+    """Construye el servicio Gmail con refresh_token. Retorna None si falta config."""
+    try:
+        from google.oauth2.credentials import Credentials
+        import google.auth.transport.requests
+        import googleapiclient.discovery
+
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=os.environ.get("GMAIL_CLIENT_ID", ""),
+            client_secret=os.environ.get("GMAIL_CLIENT_SECRET", ""),
+            scopes=['https://www.googleapis.com/auth/gmail.readonly'],
+        )
+        req = google.auth.transport.requests.Request()
+        creds.refresh(req)
+        return googleapiclient.discovery.build('gmail', 'v1', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        logger.warning(f"Gmail service error: {e}")
+        return None
+
+
+def _extract_email_body(msg: dict) -> str:
+    """Extrae texto plano del payload del mensaje Gmail."""
+    import base64 as b64mod
+    import re as remod
+
+    def decode_part(data: str) -> str:
+        try:
+            return b64mod.urlsafe_b64decode(data + '==').decode('utf-8', errors='replace')
+        except Exception:
+            return ""
+
+    def strip_html(html: str) -> str:
+        text = remod.sub(r'<[^>]+>', ' ', html)
+        text = remod.sub(r'[ \t]+', ' ', text)
+        text = remod.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    payload = msg.get('payload', {})
+    parts   = payload.get('parts', [])
+
+    # Mensajes sin partes (body directo)
+    if not parts:
+        data = payload.get('body', {}).get('data', '')
+        text = decode_part(data)
+        if payload.get('mimeType', '') == 'text/html':
+            text = strip_html(text)
+        return text[:3000]
+
+    # Buscar text/plain primero, luego text/html
+    plain_text = ""
+    html_text  = ""
+
+    def walk_parts(parts_list):
+        nonlocal plain_text, html_text
+        for part in parts_list:
+            mime = part.get('mimeType', '')
+            data = part.get('body', {}).get('data', '')
+            sub  = part.get('parts', [])
+            if sub:
+                walk_parts(sub)
+            elif mime == 'text/plain' and data:
+                plain_text += decode_part(data)
+            elif mime == 'text/html' and data:
+                html_text += strip_html(decode_part(data))
+
+    walk_parts(parts)
+    result = plain_text or html_text
+    return result[:3000]
+
+
+def _parse_email_financial_sync(subject: str, from_addr: str, body: str) -> dict | None:
+    """
+    Usa Groq para decidir si el email es financiero y extraer datos.
+    Retorna dict con {tipo, monto, descripcion} o None si no es financiero.
+    """
+    prompt = (
+        "Analiza este email y determina si contiene una transacción financiera "
+        "(gasto, cobro, ingreso, transferencia, pago recibido, etc).\n\n"
+        f"De: {from_addr[:100]}\n"
+        f"Asunto: {subject[:150]}\n"
+        f"Cuerpo:\n{body[:1500]}\n\n"
+        "Si ES una transacción financiera, responde EXACTAMENTE con este formato (sin nada más):\n"
+        "FINANCIERO|TIPO:[gasto/ingreso/transferencia]|MONTO:[número sin símbolos]|"
+        "DESCRIPCION:[descripción corta máx 60 chars, ej: 'Nu → Binance $115' o 'Depósito CETES $500']\n\n"
+        "Si NO es financiero, responde solo: NO_FINANCIERO\n\n"
+        "Tipos: gasto=dinero que sale, ingreso=dinero que entra, transferencia=entre tus propias cuentas."
+    )
+    try:
+        resp = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=80,
+            temperature=0,
+        )
+        text = resp.choices[0].message.content.strip()
+        if not text.startswith("FINANCIERO"):
+            return None
+        parts = text.split("|")
+        result = {}
+        for p in parts[1:]:
+            if p.startswith("TIPO:"):
+                result["tipo"] = p[5:].strip().lower()
+            elif p.startswith("MONTO:"):
+                try:
+                    result["monto"] = float(p[6:].strip())
+                except ValueError:
+                    result["monto"] = 0.0
+            elif p.startswith("DESCRIPCION:"):
+                result["descripcion"] = p[12:].strip()
+        return result if "monto" in result else None
+    except Exception as e:
+        logger.error(f"Gmail AI parse error: {e}")
+        return None
+
+
+def _fetch_gmail_transactions_sync(refresh_token: str, last_history_id: str | None) -> list[dict]:
+    """Busca emails financieros nuevos. Retorna lista de transacciones detectadas."""
+    service = _get_gmail_service(refresh_token)
+    if not service:
+        return []
+
+    # Buscar en los últimos 45 minutos para no perder nada entre polls
+    import time as time_mod
+    since = int(time_mod.time()) - 45 * 60
+    query = (
+        f"after:{since} "
+        "("
+        "from:nu.com.mx OR from:nubank OR "
+        "from:binance OR from:bitget OR "
+        "subject:transferencia OR subject:depósito OR subject:deposito OR "
+        "subject:retiro OR subject:pago OR subject:cobro OR "
+        "from:cetes OR from:cetesdirecto OR "
+        "from:mercadopago OR from:mercadolibre OR "
+        "from:paypal"
+        ")"
+    )
+    try:
+        result = service.users().messages().list(userId='me', q=query, maxResults=15).execute()
+        messages = result.get('messages', [])
+    except Exception as e:
+        logger.error(f"Gmail list error: {e}")
+        return []
+
+    transactions = []
+    for msg_ref in messages:
+        msg_id = msg_ref['id']
+        try:
+            full = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
+            headers = {h['name']: h['value'] for h in full.get('payload', {}).get('headers', [])}
+            subject   = headers.get('Subject', '')
+            from_addr = headers.get('From', '')
+            body      = _extract_email_body(full)
+
+            parsed = _parse_email_financial_sync(subject, from_addr, body)
+            if parsed:
+                transactions.append({
+                    "email_id": msg_id,
+                    "subject":  subject[:100],
+                    "from":     from_addr[:80],
+                    **parsed,
+                })
+        except Exception as e:
+            logger.warning(f"Gmail fetch msg {msg_id} error: {e}")
+            continue
+
+    return transactions
+
+
+def gmail_cat_keyboard(email_id: str) -> InlineKeyboardMarkup:
+    eid = email_id[-12:]  # últimos 12 chars — suficiente para identificar
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍽 Comida",     callback_data=f"gf:{eid}:comida"),
+            InlineKeyboardButton("🚌 Transporte", callback_data=f"gf:{eid}:transporte"),
+        ],
+        [
+            InlineKeyboardButton("🛍 Capricho",   callback_data=f"gf:{eid}:capricho"),
+            InlineKeyboardButton("💊 Salud",      callback_data=f"gf:{eid}:salud"),
+        ],
+        [
+            InlineKeyboardButton("👕 Ropa",       callback_data=f"gf:{eid}:ropa"),
+            InlineKeyboardButton("📦 Otros",      callback_data=f"gf:{eid}:otros"),
+        ],
+        [
+            InlineKeyboardButton("📈 Ingreso/Ahorro", callback_data=f"gf:{eid}:_ingreso"),
+            InlineKeyboardButton("❌ No registrar",   callback_data=f"gf:{eid}:_skip"),
+        ],
+    ])
+
+
+async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE):
+    """Corre cada 30 minutos. Lee los dos correos y manda notificaciones de nuevas transacciones."""
+    tokens = {
+        "1": os.environ.get("GMAIL_REFRESH_TOKEN_1", ""),
+        "2": os.environ.get("GMAIL_REFRESH_TOKEN_2", ""),
+    }
+    client_id = os.environ.get("GMAIL_CLIENT_ID", "")
+    if not client_id:
+        return  # Gmail no configurado — salir silenciosamente
+
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+
+    data = load_data()
+    processed_ids: set = set(data.get("gmail_processed_ids", []))
+    pending: dict      = data.get("gmail_pending", {})
+
+    new_found = False
+    for account_num, refresh_token in tokens.items():
+        if not refresh_token:
+            continue
+        try:
+            txs = await asyncio.to_thread(_fetch_gmail_transactions_sync, refresh_token, None)
+        except Exception as e:
+            logger.error(f"Gmail check account {account_num} error: {e}")
+            continue
+
+        for tx in txs:
+            eid = tx["email_id"]
+            if eid in processed_ids:
+                continue
+
+            # Guardar como pendiente
+            short_id      = eid[-12:]
+            pending[short_id] = tx
+            processed_ids.add(eid)
+            new_found = True
+
+            # Determinar emoji según tipo
+            tipo = tx.get("tipo", "gasto")
+            if tipo == "ingreso":
+                emoji = "💰"
+                accion = "Ingreso detectado"
+            elif tipo == "transferencia":
+                emoji = "🔄"
+                accion = "Transferencia detectada"
+            else:
+                emoji = "💸"
+                accion = "Gasto detectado"
+
+            monto       = tx.get("monto", 0)
+            descripcion = escape_md(tx.get("descripcion", tx.get("subject", "?"))[:60])
+            cuenta_txt  = escape_md(f"cuenta {account_num}")
+
+            msg = (
+                f"{emoji} *{escape_md(accion)}* \\({cuenta_txt}\\)\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"*{escape_md(f'${monto:,.2f}')}* — {descripcion}\n\n"
+                f"¿Cómo lo categorizo?"
+            )
+            await context.bot.send_message(chat_id, msg, parse_mode='MarkdownV2',
+                                           reply_markup=gmail_cat_keyboard(eid))
+
+    # Guardar estado actualizado — mantener solo los últimos 500 IDs procesados
+    processed_list = list(processed_ids)[-500:]
+    data["gmail_processed_ids"] = processed_list
+    data["gmail_pending"]       = pending
+    save_data(data)
+
+
+# ------------------------------------
 # MAIN
 # ------------------------------------
 
@@ -1533,6 +1864,9 @@ def main():
     jq.run_daily(job_enviar_informe, time=dt_time(8,  0,  tzinfo=mx),            name="enviar_informe")
     jq.run_daily(job_pedir_informe,  time=dt_time(20, 30, tzinfo=mx),            name="pedir_informe")
     jq.run_daily(job_habitos,        time=dt_time(21, 0,  tzinfo=mx),            name="habitos")
+    # Gmail: revisar cada 30 minutos si las credenciales están configuradas
+    if os.environ.get("GMAIL_CLIENT_ID"):
+        jq.run_repeating(job_gmail_check, interval=1800, first=60, name="gmail")
 
     logger.info("Bot iniciado. Esperando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

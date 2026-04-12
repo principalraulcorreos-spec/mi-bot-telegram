@@ -2,3 +2,5 @@ registro.json
 __pycache__/
 *.pyc
 .env
+credentials.json
+gmail_token_*.json
