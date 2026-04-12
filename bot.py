@@ -1273,8 +1273,8 @@ async def cmd_gmail_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.environ.get("GMAIL_CLIENT_ID"):
         await update.message.reply_text("Gmail no está configurado\\.", parse_mode='MarkdownV2')
         return
-    await update.message.reply_text("🔍 _Revisando Gmail\\.\\.\\._", parse_mode='MarkdownV2')
-    await job_gmail_check(context)
+    await update.message.reply_text("🔍 _Revisando Gmail \\(últimas 24h\\)\\.\\.\\._", parse_mode='MarkdownV2')
+    await job_gmail_check(context, window_hours=24)
     await update.message.reply_text("✅ _Revisión completada\\._", parse_mode='MarkdownV2')
 
 # ------------------------------------
@@ -1694,15 +1694,15 @@ def _parse_email_financial_sync(subject: str, from_addr: str, body: str) -> dict
         return None
 
 
-def _fetch_gmail_transactions_sync(refresh_token: str, last_history_id: str | None) -> list[dict]:
+def _fetch_gmail_transactions_sync(refresh_token: str, last_history_id: str | None, window_hours: int = 1) -> list[dict]:
     """Busca emails financieros nuevos. Retorna lista de transacciones detectadas."""
     service = _get_gmail_service(refresh_token)
     if not service:
         return []
 
-    # Buscar en los últimos 45 minutos para no perder nada entre polls
     import time as time_mod
-    since = int(time_mod.time()) - 45 * 60
+    since = int(time_mod.time()) - window_hours * 3600
+    logger.info(f"Gmail search: últimas {window_hours}h (desde {since})")
     query = (
         f"after:{since} "
         "("
@@ -1769,7 +1769,7 @@ def gmail_cat_keyboard(email_id: str) -> InlineKeyboardMarkup:
     ])
 
 
-async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE):
+async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: int = 1):
     """Corre cada 30 minutos. Lee los dos correos y manda notificaciones de nuevas transacciones."""
     tokens = {
         "1": os.environ.get("GMAIL_REFRESH_TOKEN_1", ""),
@@ -1792,7 +1792,7 @@ async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE):
         if not refresh_token:
             continue
         try:
-            txs = await asyncio.to_thread(_fetch_gmail_transactions_sync, refresh_token, None)
+            txs = await asyncio.to_thread(_fetch_gmail_transactions_sync, refresh_token, None, window_hours)
         except Exception as e:
             logger.error(f"Gmail check account {account_num} error: {e}")
             continue
