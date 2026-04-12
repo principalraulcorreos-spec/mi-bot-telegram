@@ -210,8 +210,10 @@ def load_data():
     return {"registros": [], "chat_id": None, "flow": None}
 
 def save_data(data):
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info(f"save_data: flow={data.get('flow')}, esperando={data.get('esperando')}")
 
 def get_chat_id():
     return load_data().get("chat_id")
@@ -405,6 +407,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flow = get_flow()
+    logger.info(f"handle_message: flow={flow}, esperando={get_esperando()}")
 
     if flow:
         tipo = flow['tipo']
