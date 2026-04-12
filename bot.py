@@ -237,6 +237,10 @@ async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_esperando('capital')
     await update.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
 
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_esperando('capital')
+    await update.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
+
 async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     registros = data.get("registros", [])
@@ -364,6 +368,7 @@ def main():
     app.add_handler(CommandHandler("mensual", cmd_mensual))
     app.add_handler(CommandHandler("capital", cmd_capital))
     app.add_handler(CommandHandler("historial", cmd_historial))
+    app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
