@@ -1769,7 +1769,7 @@ def gmail_cat_keyboard(email_id: str) -> InlineKeyboardMarkup:
     ])
 
 
-async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: int = 1):
+async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: float = 0.05):
     """Corre cada 30 minutos. Lee los dos correos y manda notificaciones de nuevas transacciones."""
     tokens = {
         "1": os.environ.get("GMAIL_REFRESH_TOKEN_1", ""),
@@ -1875,7 +1875,7 @@ def main():
     jq.run_daily(job_habitos,        time=dt_time(21, 0,  tzinfo=mx),            name="habitos")
     # Gmail: revisar cada 30 minutos si las credenciales están configuradas
     if os.environ.get("GMAIL_CLIENT_ID"):
-        jq.run_repeating(job_gmail_check, interval=1800, first=60, name="gmail")
+        jq.run_repeating(job_gmail_check, interval=60, first=30, name="gmail")
 
     logger.info("Bot iniciado. Esperando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
