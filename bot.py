@@ -140,6 +140,21 @@ def menu_keyboard():
         ]
     ])
 
+def historial_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("\U0001f4ca Semanales", callback_data='hist_semanal'),
+            InlineKeyboardButton("\U0001f9e0 Mensuales", callback_data='hist_mensual'),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4b0 Capital", callback_data='hist_capital'),
+            InlineKeyboardButton("\U0001f4cb Todo", callback_data='hist_todo'),
+        ],
+        [
+            InlineKeyboardButton("\u2b05\ufe0f Volver al men\u00fa", callback_data='menu'),
+        ]
+    ])
+
 # ------------------------------------
 # STORAGE
 # ------------------------------------
@@ -242,23 +257,21 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
 
 async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    registros = data.get("registros", [])
+    await update.message.reply_text(
+        "\U0001f4da *Historial \u2014 \u00bfQu\u00e9 categor\u00eda?*",
+        parse_mode='MarkdownV2',
+        reply_markup=historial_keyboard()
+    )
+
+def mostrar_registros(registros, titulo):
     if not registros:
-        await update.message.reply_text(
-            "No hay registros a\u00fan\\.",
-            parse_mode='MarkdownV2',
-            reply_markup=menu_keyboard()
-        )
-        return
-    ultimos = registros[-5:]
-    texto = "\U0001f4da *\u00daltimos registros:*\n\n"
-    for r in reversed(ultimos):
+        return f"\U0001f4da *{escape_md(titulo)}*\n\n_Sin registros a\u00fan\\._"
+    texto = f"\U0001f4da *{escape_md(titulo)}*\n\n"
+    for r in reversed(registros[-5:]):
         fecha = escape_md(r['fecha'])
-        tipo = escape_md(r['tipo'])
         resp = escape_md(r['respuesta'][:200])
-        texto += f"\U0001f4c5 *{fecha}* \u2014 {tipo}\n_{resp}_\n\n"
-    await update.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+        texto += f"\U0001f4c5 _{fecha}_\n{resp}\n\n"
+    return texto
 
 # ------------------------------------
 # CALLBACK DE BOTONES
@@ -279,23 +292,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_esperando('capital')
         await query.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
     elif data == 'historial':
-        load = load_data()
-        registros = load.get("registros", [])
-        if not registros:
-            await query.message.reply_text(
-                "No hay registros a\u00fan\\.",
-                parse_mode='MarkdownV2',
-                reply_markup=menu_keyboard()
-            )
-            return
-        ultimos = registros[-5:]
-        texto = "\U0001f4da *\u00daltimos registros:*\n\n"
-        for r in reversed(ultimos):
-            fecha = escape_md(r['fecha'])
-            tipo = escape_md(r['tipo'])
-            resp = escape_md(r['respuesta'][:200])
-            texto += f"\U0001f4c5 *{fecha}* \u2014 {tipo}\n_{resp}_\n\n"
-        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+        await query.message.reply_text(
+            "\U0001f4da *Historial \u2014 \u00bfQu\u00e9 categor\u00eda?*",
+            parse_mode='MarkdownV2',
+            reply_markup=historial_keyboard()
+        )
+    elif data in ('hist_semanal', 'hist_mensual', 'hist_capital', 'hist_todo'):
+        todos = load_data().get("registros", [])
+        if data == 'hist_semanal':
+            filtrados = [r for r in todos if r['tipo'] == 'semanal']
+            titulo = "Reportes Semanales"
+        elif data == 'hist_mensual':
+            filtrados = [r for r in todos if r['tipo'] == 'mensual']
+            titulo = "Reflexiones Mensuales"
+        elif data == 'hist_capital':
+            filtrados = [r for r in todos if r['tipo'] == 'capital']
+            titulo = "Divisiones de Capital"
+        else:
+            filtrados = todos
+            titulo = "Todos los registros"
+        texto = mostrar_registros(filtrados, titulo)
+        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=historial_keyboard())
+    elif data == 'menu':
+        await query.message.reply_text(
+            "\U0001f4cb *\u00bfQu\u00e9 quieres hacer?*",
+            parse_mode='MarkdownV2',
+            reply_markup=menu_keyboard()
+        )
 
 # ------------------------------------
 # MENSAJES DE TEXTO (respuestas)
