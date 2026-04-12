@@ -225,10 +225,6 @@ ENVIAR_INFORME = (
 def menu_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Reporte Semanal", callback_data='reporte'),
-            InlineKeyboardButton("🧠 Reflexión Mensual", callback_data='mensual'),
-        ],
-        [
             InlineKeyboardButton("💰 División de Capital", callback_data='capital'),
             InlineKeyboardButton("📚 Historial", callback_data='historial'),
         ],
@@ -817,8 +813,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ *Bot activado*\n\n"
         "Puedes escribirme directamente o usar el menú\\.\n\n"
         "Para registrar un gasto: `gasto 150 comida`\n\n"
-        "/reporte \\— Retroalimentación semanal\n"
-        "/mensual \\— Reflexión mensual\n"
         "/capital \\— División de capital\n"
         "/gastos \\— Resumen gastos del mes\n"
         "/como\\_voy \\— Snapshot general\n"
