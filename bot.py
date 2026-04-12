@@ -506,7 +506,7 @@ def main():
     jq = app.job_queue
     mx = TIMEZONE
 
-    jq.run_daily(job_semanal, time=dt_time(20, 30, tzinfo=mx), days=(3,), name="semanal")
+    jq.run_daily(job_semanal, time=dt_time(21, 10, tzinfo=mx), days=(3,), name="semanal")
     jq.run_daily(job_mensual, time=dt_time(8, 0, tzinfo=mx), days=(4,), name="mensual")
     jq.run_daily(job_capital, time=dt_time(8, 0, tzinfo=mx), name="capital")
     jq.run_daily(job_enviar_informe, time=dt_time(8, 0, tzinfo=mx), name="enviar_informe")
