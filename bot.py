@@ -21,72 +21,94 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(DATA_DIR, "registro.json")
 
 # ------------------------------------
-# MENSAJES — PREGUNTAS
+# PREGUNTAS SEMANAL (una por una)
 # ------------------------------------
 
-SEMANAL = (
-    "\u26a1 *RA\u00daL \u2014 \u00bfC\u00d3MO FUE TU SEMANA?*\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
-    "\U0001f4ca *RETROALIMENTACI\u00d3N SEMANAL*\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
-    "1\ufe0f\u20e3 *EL PULSO DE LA SEMANA*\n"
-    "\u2022 Control vs Reacci\u00f3n: \u00bf80% control o me arrastr\u00f3 la semana?\n"
-    "\u2022 Emoci\u00f3n dominante: \u00bfCalma o ansiedad?\n"
-    "\u2022 \u00bfD\u00f3nde estuve a punto de traicionarme?\n\n"
-    "2\ufe0f\u20e3 *DINERO Y EL RA\u00daL DEL FUTURO*\n"
-    "\u2022 \u00bfQu\u00e9 % de mis gastos fueron fugas?\n"
-    "\u2022 \u00bfLe rob\u00e9 al Ra\u00fal del futuro? \u00bfCu\u00e1l fue el disparador?\n"
-    "\u2022 \u00bfEn qu\u00e9 momento dije NO a un gasto impulsivo?\n\n"
-    "3\ufe0f\u20e3 *SISTEMAS Y TRADING*\n"
-    "\u2022 Del 1 al 10, \u00bfcu\u00e1nto respet\u00e9 mi estrategia?\n"
-    "\u2022 \u00bfCerr\u00e9 trades por miedo o incomodidad?\n"
-    "\u2022 \u00bfEsper\u00e9 mi configuraci\u00f3n o forc\u00e9 entradas?\n\n"
-    "4\ufe0f\u20e3 *TEMPLANZA E IMPULSOS*\n"
-    "\u2022 \u00bfCed\u00ed a impulsos carnales o transmit\u00ed esa energ\u00eda?\n"
-    "\u2022 \u00bfCom\u00ed en casa seg\u00fan lo planeado?\n\n"
-    "5\ufe0f\u20e3 *HUMILDAD Y CAR\u00c1CTER*\n"
-    "\u2022 \u00bfReconoc\u00ed que a\u00fan estoy aprendiendo?\n"
-    "\u2022 \u00bfAcept\u00e9 correcci\u00f3n o me defend\u00ed por orgullo silencioso?\n\n"
-    "6\ufe0f\u20e3 *RELACIONES Y PAZ*\n"
-    "\u2022 \u00bfFui un apoyo real para mi familia y amigos?\n"
-    "\u2022 \u00bfHabl\u00e9 desde la verdad o desde el c\u00e1lculo?\n\n"
-    "7\ufe0f\u20e3 *CIERRE*\n"
-    "\u2022 Calificaci\u00f3n de la semana \\(1\u201310\\): \\_\\_\\_\n"
-    "\u2022 \u00bfQu\u00e9 UNA cosa har\u00e9 diferente el lunes?\n\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
-    "\U0001f4dd *Responde ahora\\. No lo dejes para despu\u00e9s\\.* \U0001f447"
-)
+PREGUNTAS_SEMANAL = [
+    (
+        "1\ufe0f\u20e3 EL PULSO DE LA SEMANA",
+        "\u2022 Control vs Reacci\u00f3n: \u00bf80% control o te arrastr\u00f3 la semana?\n"
+        "\u2022 Emoci\u00f3n dominante: \u00bfCalma o ansiedad?\n"
+        "\u2022 \u00bfD\u00f3nde estuviste a punto de traicionarte?"
+    ),
+    (
+        "2\ufe0f\u20e3 DINERO Y EL RA\u00daL DEL FUTURO",
+        "\u2022 \u00bfQu\u00e9 % de tus gastos fueron fugas?\n"
+        "\u2022 \u00bfLe robaste al Ra\u00fal del futuro? \u00bfCu\u00e1l fue el disparador?\n"
+        "\u2022 \u00bfEn qu\u00e9 momento dijiste NO a un gasto impulsivo?"
+    ),
+    (
+        "3\ufe0f\u20e3 SISTEMAS Y TRADING",
+        "\u2022 Del 1 al 10, \u00bfcu\u00e1nto respetaste tu estrategia?\n"
+        "\u2022 \u00bfCerraste trades por miedo o incomodidad?\n"
+        "\u2022 \u00bfEsperaste tu configuraci\u00f3n o forzaste entradas?"
+    ),
+    (
+        "4\ufe0f\u20e3 TEMPLANZA E IMPULSOS",
+        "\u2022 \u00bfCediste a impulsos carnales o transmitiste esa energ\u00eda?\n"
+        "\u2022 \u00bfComiste en casa seg\u00fan lo planeado?"
+    ),
+    (
+        "5\ufe0f\u20e3 HUMILDAD Y CAR\u00c1CTER",
+        "\u2022 \u00bfReconociste que a\u00fan est\u00e1s aprendiendo?\n"
+        "\u2022 \u00bfAceptaste correcci\u00f3n o te defendiste por orgullo silencioso?"
+    ),
+    (
+        "6\ufe0f\u20e3 RELACIONES Y PAZ",
+        "\u2022 \u00bfFuiste un apoyo real para tu familia y amigos?\n"
+        "\u2022 \u00bfHablaste desde la verdad o desde el c\u00e1lculo?"
+    ),
+    (
+        "7\ufe0f\u20e3 CIERRE",
+        "Calificaci\u00f3n de la semana (1-10): ___\n"
+        "\u00bfQu\u00e9 UNA cosa har\u00e1s diferente el lunes?"
+    ),
+]
 
-MENSUAL = (
-    "\U0001f525 *RA\u00daL \u2014 EL MES SE CERR\u00d3\\. \u00bfQU\u00c9 APRENDISTE?*\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
-    "\U0001f9e0 *REFLEXI\u00d3N MENSUAL*\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n\n"
-    "1\ufe0f\u20e3 *ESTE MES, \u00bfC\u00d3MO VIV\u00cd?*\n"
-    "\u2022 \u00bfRespond\u00ed a la vida o la dirig\u00ed?\n"
-    "\u2022 \u00bfQu\u00e9 emoci\u00f3n domin\u00f3 m\u00e1s mis d\u00edas?\n"
-    "\u2022 \u00bfEn qu\u00e9 momentos me traicion\u00e9?\n\n"
-    "2\ufe0f\u20e3 *DINERO*\n"
-    "\u2022 \u00bfMi dinero me dio paz o estr\u00e9s este mes?\n"
-    "\u2022 \u00bfGast\u00e9 con intenci\u00f3n o por impulso?\n"
-    "\u2022 \u00bfQu\u00e9 decisi\u00f3n financiera repetir\u00eda? \u00bfCu\u00e1l no?\n\n"
-    "3\ufe0f\u20e3 *DISCIPLINA Y H\u00c1BITOS*\n"
-    "\u2022 \u00bfQu\u00e9 h\u00e1bito peque\u00f1o s\u00ed cumpl\u00ed?\n"
-    "\u2022 \u00bfD\u00f3nde me ment\u00ed diciendo \"luego\"?\n"
-    "\u2022 \u00bfQu\u00e9 h\u00e1bito sostenido 30 d\u00edas m\u00e1s me cambiar\u00eda el a\u00f1o?\n\n"
-    "4\ufe0f\u20e3 *RELACIONES*\n"
-    "\u2022 \u00bfA qui\u00e9n cuid\u00e9 de verdad?\n"
-    "\u2022 \u00bfFui refugio emocional o carga?\n\n"
-    "5\ufe0f\u20e3 *FE / VIDA INTERIOR*\n"
-    "\u2022 \u00bfEste mes conf\u00ed incluso sin entender?\n"
-    "\u2022 \u00bfQu\u00e9 agradezco sinceramente?\n\n"
-    "6\ufe0f\u20e3 *BALANCE MENSUAL*\n"
-    "Califica del 1 al 10: Orden / Paz / Avance / Honestidad / Humildad\n\n"
-    "\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
-    "\U0001f51a _\"Este mes aprend\u00ed que \\_\\_\\_\\.\"_\n"
-    "_\"El pr\u00f3ximo mes me enfocar\u00e9 en \\_\\_\\_\\.\"_\n\n"
-    "\U0001f4dd *Responde ahora\\. No lo dejes para despu\u00e9s\\.* \U0001f447"
-)
+# ------------------------------------
+# PREGUNTAS MENSUAL (una por una)
+# ------------------------------------
+
+PREGUNTAS_MENSUAL = [
+    (
+        "1\ufe0f\u20e3 ESTE MES, \u00bfC\u00d3MO VIVISTE?",
+        "\u2022 \u00bfRespondiste a la vida o la dirigiste?\n"
+        "\u2022 \u00bfQu\u00e9 emoci\u00f3n domin\u00f3 m\u00e1s tus d\u00edas?\n"
+        "\u2022 \u00bfEn qu\u00e9 momentos te traicionaste?"
+    ),
+    (
+        "2\ufe0f\u20e3 DINERO",
+        "\u2022 \u00bfTu dinero te dio paz o estr\u00e9s este mes?\n"
+        "\u2022 \u00bfGastaste con intenci\u00f3n o por impulso?\n"
+        "\u2022 \u00bfQu\u00e9 decisi\u00f3n financiera repetir\u00edas? \u00bfCu\u00e1l no?"
+    ),
+    (
+        "3\ufe0f\u20e3 DISCIPLINA Y H\u00c1BITOS",
+        "\u2022 \u00bfQu\u00e9 h\u00e1bito peque\u00f1o s\u00ed cumpliste?\n"
+        "\u2022 \u00bfD\u00f3nde te mentiste diciendo \"luego\"?\n"
+        "\u2022 \u00bfQu\u00e9 h\u00e1bito sostenido 30 d\u00edas m\u00e1s te cambiar\u00eda el a\u00f1o?"
+    ),
+    (
+        "4\ufe0f\u20e3 RELACIONES",
+        "\u2022 \u00bfA qui\u00e9n cuidaste de verdad?\n"
+        "\u2022 \u00bfFuiste refugio emocional o carga?"
+    ),
+    (
+        "5\ufe0f\u20e3 FE / VIDA INTERIOR",
+        "\u2022 \u00bfEste mes confiaste incluso sin entender?\n"
+        "\u2022 \u00bfQu\u00e9 agradeces sinceramente?"
+    ),
+    (
+        "6\ufe0f\u20e3 BALANCE MENSUAL",
+        "Califica del 1 al 10: Orden / Paz / Avance / Honestidad / Humildad\n\n"
+        "\"Este mes aprend\u00ed que ___.\"\n"
+        "\"El pr\u00f3ximo mes me enfocar\u00e9 en ___.\""
+    ),
+]
+
+# ------------------------------------
+# MENSAJE CAPITAL (sigue siendo uno solo)
+# ------------------------------------
 
 CAPITAL = (
     "\U0001f4b0 *RA\u00daL \u2014 TU DINERO DEL MES ESPERA \u00d3RDENES*\n"
@@ -125,7 +147,29 @@ ENVIAR_INFORME = (
 )
 
 # ------------------------------------
-# TECLADO DE BOTONES
+# CONFIRMACIONES
+# ------------------------------------
+
+CONFIRMACIONES = {
+    'semanal': (
+        "\u2705 *Retroalimentaci\u00f3n semanal completa\\.* \U0001f4aa\n\n"
+        "_Lo que se mide, mejora\\. Esta semana ya qued\u00f3 registrada\\._\n"
+        "_El lunes empieza desde aqu\u00ed\\._"
+    ),
+    'mensual': (
+        "\u2705 *Reflexi\u00f3n mensual completa\\.* \U0001f9e0\n\n"
+        "_Un mes m\u00e1s consciente es un a\u00f1o diferente\\._\n"
+        "_Sigue siendo honesto contigo mismo\\._"
+    ),
+    'capital': (
+        "\u2705 *Divisi\u00f3n de capital guardada\\.* \U0001f4b0\n\n"
+        "_Decidir a d\u00f3nde va tu dinero antes de gastarlo_\n"
+        "_es lo que separa al Ra\u00fal de hoy del Ra\u00fal del futuro\\._"
+    ),
+}
+
+# ------------------------------------
+# TECLADOS
 # ------------------------------------
 
 def menu_keyboard():
@@ -163,7 +207,7 @@ def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    return {"registros": [], "chat_id": None, "esperando": None}
+    return {"registros": [], "chat_id": None, "flow": None}
 
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -175,6 +219,19 @@ def get_chat_id():
 def set_chat_id(chat_id):
     data = load_data()
     data["chat_id"] = chat_id
+    save_data(data)
+
+def get_flow():
+    return load_data().get("flow")
+
+def set_flow(tipo, paso, respuestas):
+    data = load_data()
+    data["flow"] = {"tipo": tipo, "paso": paso, "respuestas": respuestas}
+    save_data(data)
+
+def clear_flow():
+    data = load_data()
+    data["flow"] = None
     save_data(data)
 
 def get_esperando():
@@ -192,6 +249,7 @@ def guardar_registro(tipo, respuesta):
         "fecha": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
         "respuesta": respuesta
     })
+    data["flow"] = None
     data["esperando"] = None
     save_data(data)
 
@@ -216,6 +274,23 @@ def escape_md(text):
         text = text.replace(c, f'\\{c}')
     return text
 
+async def enviar_pregunta(bot, chat_id, tipo, paso):
+    preguntas = PREGUNTAS_SEMANAL if tipo == 'semanal' else PREGUNTAS_MENSUAL
+    total = len(preguntas)
+    titulo, pregunta = preguntas[paso]
+    progreso = f"Pregunta {paso + 1} de {total}"
+    tipo_label = "RETROALIMENTACI\u00d3N SEMANAL" if tipo == 'semanal' else "REFLEXI\u00d3N MENSUAL"
+
+    texto = (
+        f"\u26a1 *{escape_md(tipo_label)}*\n"
+        f"\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\u2015\n"
+        f"_{escape_md(progreso)}_\n\n"
+        f"*{escape_md(titulo)}*\n\n"
+        f"{escape_md(pregunta)}\n\n"
+        f"_Responde con calma\\. Estoy escuchando\\._ \U0001f447"
+    )
+    await bot.send_message(chat_id, texto, parse_mode='MarkdownV2')
+
 # ------------------------------------
 # COMANDOS
 # ------------------------------------
@@ -228,7 +303,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/reporte \u2014 Retroalimentaci\u00f3n semanal\n"
         "/mensual \u2014 Reflexi\u00f3n mensual\n"
         "/capital \u2014 Divisi\u00f3n de capital\n"
-        "/historial \u2014 Ver \u00faltimos registros",
+        "/historial \u2014 Ver registros",
         parse_mode='MarkdownV2',
         reply_markup=menu_keyboard()
     )
@@ -241,12 +316,14 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_reporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_esperando('semanal')
-    await update.message.reply_text(SEMANAL, parse_mode='MarkdownV2')
+    set_chat_id(update.effective_chat.id)
+    set_flow('semanal', 0, [])
+    await enviar_pregunta(context.bot, update.effective_chat.id, 'semanal', 0)
 
 async def cmd_mensual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_esperando('mensual')
-    await update.message.reply_text(MENSUAL, parse_mode='MarkdownV2')
+    set_chat_id(update.effective_chat.id)
+    set_flow('mensual', 0, [])
+    await enviar_pregunta(context.bot, update.effective_chat.id, 'mensual', 0)
 
 async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_esperando('capital')
@@ -269,7 +346,7 @@ def mostrar_registros(registros, titulo):
     texto = f"\U0001f4da *{escape_md(titulo)}*\n\n"
     for r in reversed(registros[-5:]):
         fecha = escape_md(r['fecha'])
-        resp = escape_md(r['respuesta'][:200])
+        resp = escape_md(r['respuesta'][:300])
         texto += f"\U0001f4c5 _{fecha}_\n{resp}\n\n"
     return texto
 
@@ -283,11 +360,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == 'reporte':
-        set_esperando('semanal')
-        await query.message.reply_text(SEMANAL, parse_mode='MarkdownV2')
+        set_chat_id(query.message.chat_id)
+        set_flow('semanal', 0, [])
+        await enviar_pregunta(context.bot, query.message.chat_id, 'semanal', 0)
     elif data == 'mensual':
-        set_esperando('mensual')
-        await query.message.reply_text(MENSUAL, parse_mode='MarkdownV2')
+        set_chat_id(query.message.chat_id)
+        set_flow('mensual', 0, [])
+        await enviar_pregunta(context.bot, query.message.chat_id, 'mensual', 0)
     elif data == 'capital':
         set_esperando('capital')
         await query.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
@@ -324,38 +403,43 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MENSAJES DE TEXTO (respuestas)
 # ------------------------------------
 
-CONFIRMACIONES = {
-    'semanal': (
-        "\u2705 *Reflexi\u00f3n semanal guardada\\.* \U0001f4aa\n\n"
-        "_Lo que se mide, mejora\\. Esta semana ya qued\u00f3 registrada\\._\n"
-        "_El lunes empieza desde aqu\u00ed\\._"
-    ),
-    'mensual': (
-        "\u2705 *Reflexi\u00f3n mensual guardada\\.* \U0001f9e0\n\n"
-        "_Un mes m\u00e1s consciente es un a\u00f1o diferente\\._\n"
-        "_Sigue siendo honesto contigo mismo\\._"
-    ),
-    'capital': (
-        "\u2705 *Divisi\u00f3n de capital guardada\\.* \U0001f4b0\n\n"
-        "_Decidir a d\u00f3nde va tu dinero antes de gastarlo_\n"
-        "_es lo que separa al Ra\u00fal de hoy del Ra\u00fal del futuro\\._"
-    ),
-}
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tipo = get_esperando()
-    if tipo:
-        guardar_registro(tipo, update.message.text)
+    flow = get_flow()
+
+    if flow:
+        tipo = flow['tipo']
+        paso = flow['paso']
+        respuestas = flow.get('respuestas', [])
+        preguntas = PREGUNTAS_SEMANAL if tipo == 'semanal' else PREGUNTAS_MENSUAL
+        titulo, _ = preguntas[paso]
+
+        respuestas.append(f"{titulo}: {update.message.text}")
+        siguiente = paso + 1
+
+        if siguiente < len(preguntas):
+            set_flow(tipo, siguiente, respuestas)
+            await enviar_pregunta(context.bot, update.effective_chat.id, tipo, siguiente)
+        else:
+            respuesta_completa = "\n\n".join(respuestas)
+            guardar_registro(tipo, respuesta_completa)
+            fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
+            confirmacion = CONFIRMACIONES.get(tipo, "\u2705 *Guardado\\.*\n\n_Cada acci\u00f3n a tiempo cuenta\\._")
+            await update.message.reply_text(
+                f"{confirmacion}\n\n\u23f0 _{fecha}_",
+                parse_mode='MarkdownV2',
+                reply_markup=menu_keyboard()
+            )
+
+    elif get_esperando() == 'capital':
+        guardar_registro('capital', update.message.text)
         fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
-        confirmacion = CONFIRMACIONES.get(
-            tipo,
-            "\u2705 *Guardado\\.*\n\n_Cada acci\u00f3n a tiempo cuenta\\._"
-        )
+        confirmacion = CONFIRMACIONES['capital']
         await update.message.reply_text(
             f"{confirmacion}\n\n\u23f0 _{fecha}_",
             parse_mode='MarkdownV2',
             reply_markup=menu_keyboard()
         )
+
     else:
         await update.message.reply_text(
             "\U0001f4cb Usa el men\u00fa o escribe /menu",
@@ -364,21 +448,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ------------------------------------
-# JOBS PROGRAMADOS (automaticos)
+# JOBS PROGRAMADOS
 # ------------------------------------
 
 async def job_semanal(context: ContextTypes.DEFAULT_TYPE):
     chat_id = get_chat_id()
     if chat_id:
-        set_esperando('semanal')
-        await context.bot.send_message(chat_id, SEMANAL, parse_mode='MarkdownV2')
+        set_flow('semanal', 0, [])
+        await enviar_pregunta(context.bot, chat_id, 'semanal', 0)
 
 async def job_mensual(context: ContextTypes.DEFAULT_TYPE):
     if es_ultimo_viernes():
         chat_id = get_chat_id()
         if chat_id:
-            set_esperando('mensual')
-            await context.bot.send_message(chat_id, MENSUAL, parse_mode='MarkdownV2')
+            set_flow('mensual', 0, [])
+            await enviar_pregunta(context.bot, chat_id, 'mensual', 0)
 
 async def job_capital(context: ContextTypes.DEFAULT_TYPE):
     if dia_hoy() == 1:
@@ -419,14 +503,10 @@ def main():
     jq = app.job_queue
     mx = TIMEZONE
 
-    # Jueves 8:30PM — retroalimentacion semanal (automatico)
     jq.run_daily(job_semanal, time=dt_time(20, 30, tzinfo=mx), days=(3,), name="semanal")
-    # Viernes 8AM — reflexion mensual si es el ultimo viernes
     jq.run_daily(job_mensual, time=dt_time(8, 0, tzinfo=mx), days=(4,), name="mensual")
-    # Diario 8AM — capital (dia 1) y enviar informe (dia 4)
     jq.run_daily(job_capital, time=dt_time(8, 0, tzinfo=mx), name="capital")
     jq.run_daily(job_enviar_informe, time=dt_time(8, 0, tzinfo=mx), name="enviar_informe")
-    # Diario 8:30PM — pedir informe (dia 30)
     jq.run_daily(job_pedir_informe, time=dt_time(20, 30, tzinfo=mx), name="pedir_informe")
 
     logger.info("Bot iniciado. Esperando mensajes...")
