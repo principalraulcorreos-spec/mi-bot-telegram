@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import json
 import logging
 import os
@@ -19,24 +20,24 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN      = os.environ["BOT_TOKEN"]
+TIMEZONE   = pytz.timezone('America/Mexico_City')
+DATA_DIR   = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+DATA_FILE  = os.path.join(DATA_DIR, "registro.json")
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
-TIMEZONE = pytz.timezone('America/Mexico_City')
-DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
-DATA_FILE = os.path.join(DATA_DIR, "registro.json")
 
 # ------------------------------------
-# UTILIDADES (primero para que todo lo use)
+# UTILIDADES (primero — todo lo usa)
 # ------------------------------------
 
 def escape_md(text):
     chars = r'_*[]()~`>#+-=|{}.!'
     for c in chars:
-        text = text.replace(c, f'\\{c}')
-    return str(text)
+        text = str(text).replace(c, f'\\{c}')
+    return text
 
 # ------------------------------------
-# PRESUPUESTO MENSUAL (pesos)
+# PRESUPUESTO MENSUAL
 # ------------------------------------
 
 PRESUPUESTO = {
@@ -63,13 +64,24 @@ GASTO_RE = re.compile(
 )
 
 # ------------------------------------
-# HÁBITOS DIARIOS
+# HÁBITOS
 # ------------------------------------
 
 HABITOS = [
     ("gym",          "💪 ¿Hiciste gym hoy?"),
     ("comida_casa",  "🍽 ¿Comiste en casa según lo planeado?"),
     ("trading_plan", "📈 ¿Respetaste tu estrategia de trading hoy?"),
+]
+
+# ------------------------------------
+# TRADES — emociones
+# ------------------------------------
+
+EMOCIONES_TRADE = [
+    ("plan",       "✅ Según el plan"),
+    ("miedo",      "😰 Salí por miedo"),
+    ("impaciente", "😤 Cerré antes"),
+    ("sl",         "🔴 Stop loss"),
 ]
 
 # ------------------------------------
@@ -93,7 +105,7 @@ def frase_aleatoria():
     return escape_md(random.choice(FRASES_RAW))
 
 # ------------------------------------
-# PREGUNTAS SEMANAL (una por una)
+# PREGUNTAS SEMANAL
 # ------------------------------------
 
 PREGUNTAS_SEMANAL = [
@@ -138,7 +150,7 @@ PREGUNTAS_SEMANAL = [
 ]
 
 # ------------------------------------
-# PREGUNTAS MENSUAL (una por una)
+# PREGUNTAS MENSUAL
 # ------------------------------------
 
 PREGUNTAS_MENSUAL = [
@@ -226,11 +238,15 @@ def menu_keyboard():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💰 División de Capital", callback_data='capital'),
-            InlineKeyboardButton("📚 Historial", callback_data='historial'),
+            InlineKeyboardButton("📚 Historial",           callback_data='historial'),
         ],
         [
-            InlineKeyboardButton("💸 Gastos del Mes", callback_data='gastos'),
-            InlineKeyboardButton("🎯 ¿Cómo voy?", callback_data='como_voy'),
+            InlineKeyboardButton("💸 Gastos del Mes",  callback_data='gastos'),
+            InlineKeyboardButton("🎯 ¿Cómo voy?",      callback_data='como_voy'),
+        ],
+        [
+            InlineKeyboardButton("📈 Trades",  callback_data='trades'),
+            InlineKeyboardButton("📝 Notas",   callback_data='notas'),
         ],
     ])
 
@@ -241,12 +257,10 @@ def historial_keyboard():
             InlineKeyboardButton("🧠 Mensuales", callback_data='hist_mensual'),
         ],
         [
-            InlineKeyboardButton("💰 Capital", callback_data='hist_capital'),
-            InlineKeyboardButton("📋 Todo", callback_data='hist_todo'),
+            InlineKeyboardButton("💰 Capital",   callback_data='hist_capital'),
+            InlineKeyboardButton("📋 Todo",      callback_data='hist_todo'),
         ],
-        [
-            InlineKeyboardButton("⬅️ Volver al menú", callback_data='menu'),
-        ]
+        [InlineKeyboardButton("⬅️ Volver al menú", callback_data='menu')],
     ])
 
 def habito_keyboard():
@@ -261,7 +275,29 @@ def confirm_keyboard():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Registrar", callback_data='accion_si'),
-            InlineKeyboardButton("❌ No", callback_data='accion_no'),
+            InlineKeyboardButton("❌ No",        callback_data='accion_no'),
+        ]
+    ])
+
+def trade_confirm_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Correcto", callback_data='trade_si'),
+            InlineKeyboardButton("❌ Incorrecto", callback_data='trade_no'),
+        ]
+    ])
+
+def emocion_trade_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f'trade_emo_{key}')]
+        for key, label in EMOCIONES_TRADE
+    ])
+
+def estrategia_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sí, seguí el plan", callback_data='trade_plan_si'),
+            InlineKeyboardButton("❌ Me salí del plan",  callback_data='trade_plan_no'),
         ]
     ])
 
@@ -279,53 +315,48 @@ def load_data():
         data.setdefault("ai_history", [])
         data.setdefault("ai_last_message", None)
         data.setdefault("pending_action", None)
+        data.setdefault("trades", [])
+        data.setdefault("notas", [])
+        data.setdefault("trade_pending", None)
         return data
     return {
         "registros": [], "chat_id": None, "flow": None, "esperando": None,
         "gastos": [], "habitos": [], "habito_flow": None,
         "ai_history": [], "ai_last_message": None, "pending_action": None,
+        "trades": [], "notas": [], "trade_pending": None,
     }
 
 def save_data(data):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"save_data: flow={data.get('flow')}, esperando={data.get('esperando')}")
 
 def get_chat_id():
     return load_data().get("chat_id")
 
 def set_chat_id(chat_id):
-    data = load_data()
-    data["chat_id"] = chat_id
-    save_data(data)
+    data = load_data(); data["chat_id"] = chat_id; save_data(data)
 
 def get_flow():
     return load_data().get("flow")
 
 def set_flow(tipo, paso, respuestas):
-    data = load_data()
-    data["flow"] = {"tipo": tipo, "paso": paso, "respuestas": respuestas}
-    save_data(data)
+    data = load_data(); data["flow"] = {"tipo": tipo, "paso": paso, "respuestas": respuestas}; save_data(data)
 
 def get_esperando():
     return load_data().get("esperando")
 
 def set_esperando(tipo):
-    data = load_data()
-    data["esperando"] = tipo
-    save_data(data)
+    data = load_data(); data["esperando"] = tipo; save_data(data)
 
 def guardar_registro(tipo, respuesta):
     data = load_data()
     data["registros"].append({
         "tipo": tipo,
         "fecha": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
-        "respuesta": respuesta
+        "respuesta": respuesta,
     })
-    data["flow"] = None
-    data["esperando"] = None
-    save_data(data)
+    data["flow"] = None; data["esperando"] = None; save_data(data)
 
 def registrar_gasto(cantidad, categoria):
     cat = CATEGORIAS_ALIAS.get(categoria.lower(), categoria.lower())
@@ -338,29 +369,58 @@ def registrar_gasto(cantidad, categoria):
     save_data(data)
     return cat
 
+def check_budget_alert(categoria):
+    presup = PRESUPUESTO.get(categoria)
+    if not presup:
+        return None
+    total = sum(g["cantidad"] for g in get_gastos_mes() if g["categoria"] == categoria)
+    pct = total / presup * 100
+    if pct >= 100:
+        return f"🚨 *¡Superaste el presupuesto de {escape_md(categoria.capitalize())}\\!*\n_${total:.0f} de ${presup} \\({pct:.0f}%\\)_"
+    elif pct >= 80:
+        return f"⚠️ *Alerta: {escape_md(categoria.capitalize())} al {pct:.0f}%*\n_${total:.0f} de ${presup}_"
+    return None
+
 def get_gastos_mes(año=None, mes=None):
     now = datetime.now(TIMEZONE)
-    año = año or now.year
-    mes = mes or now.month
-    data = load_data()
+    año = año or now.year; mes = mes or now.month
     return [
-        g for g in data.get("gastos", [])
+        g for g in load_data().get("gastos", [])
         if g["fecha"].startswith(f"{año:04d}-{mes:02d}")
     ]
 
 def get_habitos_dias(n=7):
-    now = datetime.now(TIMEZONE).date()
-    cutoff = now - timedelta(days=n - 1)
-    data = load_data()
+    cutoff = (datetime.now(TIMEZONE).date() - timedelta(days=n - 1))
     return [
-        h for h in data.get("habitos", [])
+        h for h in load_data().get("habitos", [])
         if datetime.strptime(h["fecha"], "%Y-%m-%d").date() >= cutoff
     ]
 
+def get_streak(clave):
+    habitos_sorted = sorted(load_data().get("habitos", []), key=lambda h: h["fecha"], reverse=True)
+    if not habitos_sorted:
+        return 0
+    streak = 0
+    expected = None
+    for h in habitos_sorted:
+        hdate = datetime.strptime(h["fecha"], "%Y-%m-%d").date()
+        if expected is None:
+            expected = hdate
+        if hdate == expected:
+            if h["respuestas"].get(clave):
+                streak += 1
+                expected = hdate - timedelta(days=1)
+            else:
+                break
+        elif hdate < expected:
+            break
+    return streak
+
+def get_streaks():
+    return {clave: get_streak(clave) for clave, _ in HABITOS}
+
 def set_habito_flow(paso, respuestas):
-    data = load_data()
-    data["habito_flow"] = {"paso": paso, "respuestas": respuestas}
-    save_data(data)
+    data = load_data(); data["habito_flow"] = {"paso": paso, "respuestas": respuestas}; save_data(data)
 
 def registrar_habito(respuestas):
     data = load_data()
@@ -368,8 +428,57 @@ def registrar_habito(respuestas):
         "fecha": datetime.now(TIMEZONE).strftime("%Y-%m-%d"),
         "respuestas": respuestas,
     })
-    data["habito_flow"] = None
+    data["habito_flow"] = None; save_data(data)
+
+def guardar_nota(texto):
+    data = load_data()
+    data["notas"].append({
+        "fecha": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
+        "texto": texto,
+    })
     save_data(data)
+
+def get_open_trade():
+    trades = load_data().get("trades", [])
+    for t in reversed(trades):
+        if t.get("fecha_salida") is None:
+            return t
+    return None
+
+def guardar_trade_entrada(trade_data):
+    data = load_data()
+    data["trades"].append(trade_data)
+    save_data(data)
+
+def cerrar_trade(fecha_entrada, salida, emocion, siguio_plan):
+    data = load_data()
+    for t in data["trades"]:
+        if t.get("fecha_entrada") == fecha_entrada:
+            t["fecha_salida"] = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M")
+            t["salida"] = salida
+            t["emocion"] = emocion
+            t["siguio_plan"] = siguio_plan
+            # Calcular resultado en R si hay SL
+            try:
+                if t.get("sl") and t.get("entrada"):
+                    riesgo = abs(float(t["entrada"]) - float(t["sl"]))
+                    resultado = float(salida) - float(t["entrada"])
+                    if t.get("direccion") == "short":
+                        resultado = -resultado
+                    t["resultado_r"] = round(resultado / riesgo, 2) if riesgo > 0 else None
+            except Exception:
+                t["resultado_r"] = None
+            break
+    save_data(data)
+
+def set_trade_pending(tp):
+    data = load_data(); data["trade_pending"] = tp; save_data(data)
+
+def get_trade_pending():
+    return load_data().get("trade_pending")
+
+def clear_trade_pending():
+    data = load_data(); data["trade_pending"] = None; save_data(data)
 
 def get_ai_history():
     data = load_data()
@@ -389,7 +498,7 @@ def get_ai_history():
 def save_ai_history(history, user_msg, assistant_msg):
     data = load_data()
     full = history + [
-        {"role": "user", "content": user_msg},
+        {"role": "user",      "content": user_msg},
         {"role": "assistant", "content": assistant_msg},
     ]
     data["ai_history"] = full[-20:]
@@ -397,28 +506,23 @@ def save_ai_history(history, user_msg, assistant_msg):
     save_data(data)
 
 def set_pending_action(action):
-    data = load_data()
-    data["pending_action"] = action
-    save_data(data)
+    data = load_data(); data["pending_action"] = action; save_data(data)
 
 def get_pending_action():
     return load_data().get("pending_action")
 
 def clear_pending_action():
-    data = load_data()
-    data["pending_action"] = None
-    save_data(data)
+    data = load_data(); data["pending_action"] = None; save_data(data)
 
 def clear_all_flows():
     data = load_data()
-    data["flow"] = None
-    data["esperando"] = None
-    data["habito_flow"] = None
-    data["pending_action"] = None
+    data["flow"] = None; data["esperando"] = None
+    data["habito_flow"] = None; data["pending_action"] = None
+    data["trade_pending"] = None
     save_data(data)
 
 # ------------------------------------
-# UTILIDADES (helpers)
+# UTILIDADES — helpers
 # ------------------------------------
 
 def es_ultimo_viernes():
@@ -436,12 +540,11 @@ async def enviar_pregunta(bot, chat_id, tipo, paso):
     preguntas = PREGUNTAS_SEMANAL if tipo == 'semanal' else PREGUNTAS_MENSUAL
     total = len(preguntas)
     titulo, pregunta = preguntas[paso]
-    progreso = f"Pregunta {paso + 1} de {total}"
     tipo_label = "RETROALIMENTACIÓN SEMANAL" if tipo == 'semanal' else "REFLEXIÓN MENSUAL"
     texto = (
         f"⚡ *{escape_md(tipo_label)}*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"_{escape_md(progreso)}_\n\n"
+        f"_{escape_md(f'Pregunta {paso+1} de {total}')}_\n\n"
         f"*{escape_md(titulo)}*\n\n"
         f"{escape_md(pregunta)}\n\n"
         f"_Responde con calma\\. Estoy escuchando\\._ 👇"
@@ -449,44 +552,66 @@ async def enviar_pregunta(bot, chat_id, tipo, paso):
     await bot.send_message(chat_id, texto, parse_mode='MarkdownV2')
 
 # ------------------------------------
-# RESÚMENES (para /como_voy, resumen semanal, /gastos)
+# RESÚMENES
 # ------------------------------------
 
+def streak_text(streaks):
+    lines = ""
+    labels = {clave: label.split("¿")[-1].rstrip("?").strip() if "¿" in label else label
+              for clave, label in HABITOS}
+    for clave, s in streaks.items():
+        if s >= 2:
+            lines += f"🔥 {s} días seguidos: {escape_md(labels[clave])}\n"
+    return lines
+
 def generar_resumen_semanal():
-    habitos_7 = get_habitos_dias(7)
-    now = datetime.now(TIMEZONE)
-    cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-    data = load_data()
-    gastos_7 = [g for g in data.get("gastos", []) if g["fecha"][:10] >= cutoff]
+    habitos_7  = get_habitos_dias(7)
+    cutoff     = (datetime.now(TIMEZONE) - timedelta(days=7)).strftime("%Y-%m-%d")
+    gastos_7   = [g for g in load_data().get("gastos", []) if g["fecha"][:10] >= cutoff]
+    trades_sem = [t for t in load_data().get("trades", [])
+                  if t.get("fecha_entrada", "")[:10] >= cutoff and t.get("fecha_salida")]
 
     habitos_lines = ""
     for clave, label in HABITOS:
         short = label.split("¿")[-1].rstrip("?").strip() if "¿" in label else label
         if habitos_7:
-            cumplidos = sum(1 for h in habitos_7 if h["respuestas"].get(clave))
-            total = len(habitos_7)
-            icons = "".join("✅" if h["respuestas"].get(clave) else "❌" for h in habitos_7[-7:])
-            habitos_lines += f"\\- {escape_md(short)}: {icons} {cumplidos}/{total}\n"
+            cumplidos  = sum(1 for h in habitos_7 if h["respuestas"].get(clave))
+            icons      = "".join("✅" if h["respuestas"].get(clave) else "❌" for h in habitos_7[-7:])
+            streak     = get_streak(clave)
+            streak_tag = f" 🔥{streak}" if streak >= 2 else ""
+            habitos_lines += f"\\- {escape_md(short)}: {icons} {cumplidos}/{len(habitos_7)}{streak_tag}\n"
         else:
             habitos_lines += f"\\- {escape_md(short)}: _sin datos_\n"
 
     gastos_por_cat = {}
     for g in gastos_7:
         gastos_por_cat[g["categoria"]] = gastos_por_cat.get(g["categoria"], 0) + g["cantidad"]
-    total_gasto_semana = sum(gastos_por_cat.values())
-
+    total_g = sum(gastos_por_cat.values())
     gastos_lines = ""
     for cat, total in sorted(gastos_por_cat.items(), key=lambda x: -x[1]):
         gastos_lines += f"\\- {escape_md(cat.capitalize())}: ${total:.0f}\n"
     if not gastos_lines:
-        gastos_lines = "_Sin gastos registrados esta semana_\n"
+        gastos_lines = "_Sin gastos registrados_\n"
+
+    trades_lines = ""
+    if trades_sem:
+        wins  = sum(1 for t in trades_sem if (t.get("resultado_r") or 0) > 0)
+        total_t = len(trades_sem)
+        rs    = [t["resultado_r"] for t in trades_sem if t.get("resultado_r") is not None]
+        total_r = sum(rs)
+        trades_lines = (
+            f"\n📈 *Trades de la semana*\n"
+            f"\\- Trades: {total_t} \\| Win rate: {wins}/{total_t}\n"
+            f"\\- R total: {escape_md(f'{total_r:+.2f}R')}\n"
+        )
 
     return (
         "📊 *RAÚL — RESUMEN DE LA SEMANA*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💪 *Hábitos \\(últimos 7 días\\)*\n{habitos_lines}\n"
+        f"💪 *Hábitos \\(últimos 7 días\\)*\n{habitos_lines}"
+        f"{trades_lines}\n"
         f"💰 *Gastos de la semana*\n{gastos_lines}"
-        f"Total: ${total_gasto_semana:.0f}\n\n"
+        f"Total: ${total_g:.0f}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "_Ahora responde honestamente\\. ¿Cómo fue la semana?_ 👇"
     )
@@ -495,85 +620,92 @@ def generar_resumen_gastos():
     now = datetime.now(TIMEZONE)
     gastos_mes = get_gastos_mes()
     mes_esc = escape_md(now.strftime('%B %Y').capitalize())
-
     if not gastos_mes:
         return (
             f"💸 *Gastos de {mes_esc}*\n\n"
             "_Sin gastos registrados aún\\._\n\n"
             "_Escribe:_ `gasto 150 comida`"
         )
-
     gastos_por_cat = {}
     for g in gastos_mes:
         gastos_por_cat[g["categoria"]] = gastos_por_cat.get(g["categoria"], 0) + g["cantidad"]
     total_gastado = sum(gastos_por_cat.values())
-
     lines = ""
     for cat in sorted(gastos_por_cat, key=lambda c: -gastos_por_cat[c]):
         gastado = gastos_por_cat[cat]
-        presup = PRESUPUESTO.get(cat)
+        presup  = PRESUPUESTO.get(cat)
         cat_esc = escape_md(cat.capitalize())
         if presup:
-            pct = gastado / presup * 100
+            pct    = gastado / presup * 100
             status = " ⚠️" if gastado > presup else ""
             lines += f"\\- *{cat_esc}*: ${gastado:.0f} / ${presup}{escape_md(status)} \\({pct:.0f}%\\)\n"
         else:
             lines += f"\\- *{cat_esc}*: ${gastado:.0f}\n"
-
-    total_presup = sum(PRESUPUESTO.values())
     return (
         f"💸 *GASTOS — {mes_esc}*\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"{lines}\n"
-        f"*Total: ${total_gastado:.0f} / ${total_presup}*"
+        f"*Total: ${total_gastado:.0f} / ${sum(PRESUPUESTO.values())}*"
     )
 
 def generar_como_voy():
     now = datetime.now(TIMEZONE)
     data = load_data()
     num_semanas = len([r for r in data.get("registros", []) if r["tipo"] == "semanal"])
-    habitos_7 = get_habitos_dias(7)
+    habitos_7   = get_habitos_dias(7)
+    streaks     = get_streaks()
 
     habitos_lines = ""
     for clave, label in HABITOS:
         short = label.split("¿")[-1].rstrip("?").strip() if "¿" in label else label
+        s = streaks.get(clave, 0)
+        streak_tag = f" 🔥 {s} días" if s >= 2 else ""
         if habitos_7:
             cumplidos = sum(1 for h in habitos_7 if h["respuestas"].get(clave))
-            total_dias = len(habitos_7)
-            icons = "".join("✅" if h["respuestas"].get(clave) else "❌" for h in habitos_7)
-            habitos_lines += f"\\- {escape_md(short)}: {icons} {cumplidos}/{total_dias}\n"
+            icons     = "".join("✅" if h["respuestas"].get(clave) else "❌" for h in habitos_7)
+            habitos_lines += f"\\- {escape_md(short)}: {icons} {cumplidos}/{len(habitos_7)}{escape_md(streak_tag)}\n"
         else:
             habitos_lines += f"\\- {escape_md(short)}: _sin datos_\n"
 
-    gastos_mes = get_gastos_mes()
+    gastos_mes    = get_gastos_mes()
     total_gastado = sum(g["cantidad"] for g in gastos_mes)
     gastos_por_cat = {}
     for g in gastos_mes:
         gastos_por_cat[g["categoria"]] = gastos_por_cat.get(g["categoria"], 0) + g["cantidad"]
-
     gastos_lines = ""
     for cat in sorted(gastos_por_cat, key=lambda c: -gastos_por_cat[c]):
         gastado = gastos_por_cat[cat]
-        presup = PRESUPUESTO.get(cat)
+        presup  = PRESUPUESTO.get(cat)
         cat_esc = escape_md(cat.capitalize())
-        if presup:
-            pct = gastado / presup * 100
-            status = " ⚠️" if gastado > presup else ""
-            gastos_lines += f"  \\- {cat_esc}: ${gastado:.0f}{escape_md(status)} \\({pct:.0f}%\\)\n"
-        else:
-            gastos_lines += f"  \\- {cat_esc}: ${gastado:.0f}\n"
+        status  = " ⚠️" if presup and gastado > presup else ""
+        pct_txt = f" \\({gastado/presup*100:.0f}%\\)" if presup else ""
+        gastos_lines += f"  \\- {cat_esc}: ${gastado:.0f}{escape_md(status)}{pct_txt}\n"
     if not gastos_lines:
         gastos_lines = "  _Sin gastos este mes_\n"
 
+    # Trades resumen del mes
+    trades_mes = [t for t in data.get("trades", [])
+                  if t.get("fecha_entrada", "")[:7] == now.strftime("%Y-%m") and t.get("fecha_salida")]
+    trades_line = ""
+    if trades_mes:
+        wins  = sum(1 for t in trades_mes if (t.get("resultado_r") or 0) > 0)
+        rs    = [t["resultado_r"] for t in trades_mes if t.get("resultado_r") is not None]
+        total_r = sum(rs)
+        trades_line = (
+            f"\n📈 *Trades del mes*\n"
+            f"  \\- {len(trades_mes)} trades \\| {wins} ganados\n"
+            f"  \\- R total: {escape_md(f'{total_r:+.2f}R')}\n"
+        )
+
     mes_esc = escape_md(now.strftime('%B').capitalize())
-    total_presup = sum(PRESUPUESTO.values())
     return (
         f"🎯 *RAÚL — ¿CÓMO VAS?*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📅 *Semanas registradas:* {num_semanas}\n\n"
-        f"💪 *Hábitos \\(últimos 7 días\\)*\n{habitos_lines}\n"
+        f"💪 *Hábitos \\(últimos 7 días\\)*\n{habitos_lines}"
+        f"{trades_line}\n"
         f"💸 *Gastos de {mes_esc}*\n{gastos_lines}\n"
-        f"*Total gastado: ${total_gastado:.0f} / ${total_presup}*"
+        f"*Total gastado: ${total_gastado:.0f} / ${sum(PRESUPUESTO.values())}*"
     )
 
 def mostrar_registros(registros, titulo):
@@ -582,33 +714,87 @@ def mostrar_registros(registros, titulo):
     texto = f"📚 *{escape_md(titulo)}*\n\n"
     for r in reversed(registros[-5:]):
         fecha = escape_md(r['fecha'])
-        resp = escape_md(r['respuesta'][:300])
+        resp  = escape_md(r['respuesta'][:300])
         texto += f"📅 _{fecha}_\n{resp}\n\n"
     return texto
 
+def mostrar_trades(trades):
+    cerrados = [t for t in trades if t.get("fecha_salida")]
+    if not cerrados:
+        return "📈 *Trades*\n\n_Sin trades cerrados aún\\._\n\n_Manda una foto con caption_ `entrada`"
+    texto = "📈 *ÚLTIMOS TRADES*\n━━━━━━━━━━━━━━━\n\n"
+    for t in reversed(cerrados[-5:]):
+        par   = escape_md(t.get("par", "?"))
+        dire  = escape_md(t.get("direccion", "?"))
+        ent   = escape_md(str(t.get("entrada", "?")))
+        sal   = escape_md(str(t.get("salida", "?")))
+        r_val = t.get("resultado_r")
+        r_txt = escape_md(f"{r_val:+.2f}R") if r_val is not None else "?"
+        emoji = "✅" if (r_val or 0) > 0 else "🔴"
+        emo   = escape_md(t.get("emocion", "?"))
+        fecha = escape_md(t.get("fecha_entrada", "?")[:10])
+        texto += (
+            f"{emoji} *{par}* {dire} \\| _{fecha}_\n"
+            f"  Entrada: {ent} → Salida: {sal} \\| *{r_txt}*\n"
+            f"  Emoción: {emo}\n\n"
+        )
+    return texto
+
+def mostrar_notas(notas):
+    if not notas:
+        return "📝 *Notas*\n\n_Sin notas aún\\._\n\nDile al bot algo como:\n_\"recuérdame llamar al contador el martes\"_"
+    texto = "📝 *NOTAS GUARDADAS*\n━━━━━━━━━━━━━━━\n\n"
+    for n in reversed(notas[-8:]):
+        fecha = escape_md(n.get("fecha", "?")[:10])
+        nota  = escape_md(n.get("texto", ""))
+        texto += f"📅 _{fecha}_\n{nota}\n\n"
+    return texto
+
 # ------------------------------------
-# IA — CLAUDE
+# IA — GROQ CHAT
 # ------------------------------------
 
 def build_system_prompt():
-    now = datetime.now(TIMEZONE)
-    gastos_mes = get_gastos_mes()
-    habitos_7 = get_habitos_dias(7)
-    data = load_data()
+    now         = datetime.now(TIMEZONE)
+    data        = load_data()
+    gastos_mes  = get_gastos_mes()
+    habitos_7   = get_habitos_dias(7)
+    streaks     = get_streaks()
     num_semanas = len([r for r in data.get("registros", []) if r["tipo"] == "semanal"])
 
     gastos_por_cat = {}
     for g in gastos_mes:
         gastos_por_cat[g["categoria"]] = gastos_por_cat.get(g["categoria"], 0) + g["cantidad"]
-    total_gastado = sum(gastos_por_cat.values())
 
     habitos_resumen = {}
     for clave, _ in HABITOS:
         if habitos_7:
             cumplidos = sum(1 for h in habitos_7 if h["respuestas"].get(clave))
-            habitos_resumen[clave] = f"{cumplidos}/{len(habitos_7)}"
+            habitos_resumen[clave] = f"{cumplidos}/{len(habitos_7)} | streak: {streaks.get(clave,0)} días"
         else:
             habitos_resumen[clave] = "sin datos"
+
+    # Últimos 10 gastos individuales
+    gastos_recientes = sorted(data.get("gastos", []), key=lambda g: g["fecha"], reverse=True)[:10]
+    gastos_str = "\n".join([f"  {g['fecha'][:10]}: ${g['cantidad']:.0f} {g['categoria']}"
+                             for g in gastos_recientes]) or "  ninguno"
+
+    # Últimas notas
+    notas = data.get("notas", [])[-5:]
+    notas_str = "\n".join([f"  {n['fecha'][:10]}: {n['texto']}" for n in notas]) or "  ninguna"
+
+    # Trades recientes
+    trades_cerrados = [t for t in data.get("trades", []) if t.get("fecha_salida")][-5:]
+    trades_str = ""
+    if trades_cerrados:
+        for t in trades_cerrados:
+            r = t.get("resultado_r")
+            trades_str += f"  {t.get('fecha_entrada','')[:10]}: {t.get('par','?')} {t.get('direccion','?')} → {f'{r:+.2f}R' if r else '?'}\n"
+    else:
+        trades_str = "  ninguno aún"
+
+    open_trade = get_open_trade()
+    open_str = f"  Tiene un trade abierto en {open_trade.get('par','?')} {open_trade.get('direccion','?')} desde {open_trade.get('fecha_entrada','?')[:10]}" if open_trade else "  ninguno"
 
     return f"""Eres el asistente personal de Raúl, integrado en su bot de Telegram de vida organizada.
 
@@ -623,24 +809,39 @@ PERFIL DE RAÚL:
 
 CONTEXTO ACTUAL ({now.strftime('%d/%m/%Y %H:%M')} Ciudad de México):
 - Semanas de retroalimentación completadas: {num_semanas}
-- Gastos este mes: ${total_gastado:.0f} de ${sum(PRESUPUESTO.values())} presupuesto
-- Detalle gastos mes: {json.dumps(gastos_por_cat, ensure_ascii=False) if gastos_por_cat else 'ninguno aún'}
-- Hábitos últimos 7 días — gym: {habitos_resumen.get('gym', 'sin datos')}, comida en casa: {habitos_resumen.get('comida_casa', 'sin datos')}, trading según plan: {habitos_resumen.get('trading_plan', 'sin datos')}
+- Gastos este mes por categoría: {json.dumps(gastos_por_cat, ensure_ascii=False) if gastos_por_cat else 'ninguno'}
+- Últimos gastos individuales:
+{gastos_str}
+- Hábitos últimos 7 días:
+  gym: {habitos_resumen.get('gym','sin datos')}
+  comida en casa: {habitos_resumen.get('comida_casa','sin datos')}
+  trading según plan: {habitos_resumen.get('trading_plan','sin datos')}
+- Trade abierto: {open_str}
+- Trades recientes:
+{trades_str}
+- Notas guardadas:
+{notas_str}
 
 INSTRUCCIONES:
 - Habla de tú a Raúl, en español mexicano, informal pero directo y con carácter
 - Eres SU asistente personal — conoces su vida, sus metas, sus puntos débiles
-- Respuestas cortas (máximo 3-4 líneas). Sin emojis excesivos.
-- Conéctate con lo que ya sabes de él: trading, fe, abuelo, Nallelita, disciplina
-- Nunca uses markdown en tus respuestas (sin asteriscos, guiones bajos, etc.)
-- Si menciona algo relevante de su vida, relaciónalo con sus metas
+- Respuestas cortas (máximo 3-4 líneas). Sin markdown (sin asteriscos, guiones bajos, etc.)
+- Usa los datos reales del contexto para responder preguntas específicas
+- Si pregunta "¿cuánto gasté en X?" o "¿cómo van mis hábitos?" responde con los números exactos del contexto
+- Conéctate con lo que sabes de él: trading, fe, abuelo, Nallelita, disciplina
 
-DETECCIÓN DE GASTOS:
-Si en el mensaje detectas un gasto con monto numérico y categoría claros, agrega al final de tu respuesta (en línea separada):
+DETECCIÓN DE ACCIONES — incluye al final de tu respuesta (línea separada) si aplica:
+
+Si detectas un gasto claro con monto y categoría:
 ACCION_GASTO:[monto]:[categoria]
 Ejemplo: ACCION_GASTO:150:comida
 Categorías válidas: comida, transporte, capricho, ropa, salud, otros
-Solo incluye esta línea si estás seguro del monto y categoría. Si el monto es ambiguo, no la incluyas."""
+
+Si detectas que quiere guardar una nota/recordatorio:
+ACCION_NOTA:[texto de la nota]
+Ejemplo: ACCION_NOTA:Llamar al contador el martes 15
+
+Solo incluye UNA acción por respuesta y solo si estás muy seguro."""
 
 def _call_groq_sync(user_message: str, history: list) -> str:
     messages = (
@@ -664,35 +865,42 @@ async def call_ai(user_message: str, history: list) -> str:
 
 def parse_ai_response(text: str):
     """Devuelve (mensaje_limpio, accion_o_None)."""
-    lines = text.strip().split('\n')
+    lines  = text.strip().split('\n')
     action = None
-    clean_lines = []
+    clean  = []
     for line in lines:
         if line.startswith('ACCION_GASTO:'):
             parts = line.split(':')
             if len(parts) >= 3:
                 try:
-                    amount = float(parts[1].strip())
-                    category = parts[2].strip().lower()
-                    action = {"type": "gasto", "amount": amount, "category": category}
+                    action = {"type": "gasto", "amount": float(parts[1].strip()), "category": parts[2].strip().lower()}
                 except Exception:
-                    pass
+                    clean.append(line)
+        elif line.startswith('ACCION_NOTA:'):
+            texto = line[len('ACCION_NOTA:'):].strip()
+            if texto:
+                action = {"type": "nota", "texto": texto}
         else:
-            clean_lines.append(line)
-    return '\n'.join(clean_lines).strip(), action
+            clean.append(line)
+    return '\n'.join(clean).strip(), action
 
 async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    history = get_ai_history()
+    history      = get_ai_history()
     raw_response = await call_ai(text, history)
     message_text, action = parse_ai_response(raw_response)
     save_ai_history(history, text, raw_response)
 
     if action and action["type"] == "gasto":
         set_pending_action(action)
-        cat_cap = action['category'].capitalize()
         await update.message.reply_text(
-            f"{message_text}\n\n💸 ¿Registro ${action['amount']:.0f} en {cat_cap}?",
+            f"{message_text}\n\n💸 ¿Registro ${action['amount']:.0f} en {action['category'].capitalize()}?",
             reply_markup=confirm_keyboard()
+        )
+    elif action and action["type"] == "nota":
+        guardar_nota(action["texto"])
+        await update.message.reply_text(
+            f"{message_text}\n\n📝 _Nota guardada\\._",
+            parse_mode='MarkdownV2'
         )
     else:
         await update.message.reply_text(message_text)
@@ -714,21 +922,224 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.environ.get("GROQ_API_KEY"):
         await update.message.reply_text("Los audios no están configurados aún. Escríbeme en texto.")
         return
-
     voice = update.message.voice
     try:
-        tg_file = await context.bot.get_file(voice.file_id)
+        tg_file     = await context.bot.get_file(voice.file_id)
         audio_bytes = bytes(await tg_file.download_as_bytearray())
-        text = await asyncio.to_thread(_transcribe_sync, audio_bytes)
+        text        = await asyncio.to_thread(_transcribe_sync, audio_bytes)
         logger.info(f"Audio transcrito: {text}")
-        await update.message.reply_text(
-            f"🎙 _{escape_md(text)}_",
-            parse_mode='MarkdownV2'
-        )
+        await update.message.reply_text(f"🎙 _{escape_md(text)}_", parse_mode='MarkdownV2')
         await process_text_message(update, context, text)
     except Exception as e:
         logger.error(f"Error transcribiendo audio: {e}")
         await update.message.reply_text("No pude entender el audio. Intenta de nuevo.")
+
+# ------------------------------------
+# FOTOS — TICKETS Y TRADES
+# ------------------------------------
+
+def _analyze_receipt_sync(photo_bytes: bytes) -> str:
+    b64 = base64.b64encode(photo_bytes).decode()
+    resp = groq_client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": (
+                    "Analiza este ticket o recibo. Extrae el monto total y la categoría del gasto. "
+                    "Categorías válidas: comida, transporte, capricho, ropa, salud, otros. "
+                    "Responde SOLO con este formato: MONTO:[número] CATEGORIA:[categoría] "
+                    "Si no puedes determinarlo pon null en el campo correspondiente."
+                )},
+            ]
+        }],
+        max_tokens=80,
+    )
+    return resp.choices[0].message.content.strip()
+
+def _analyze_trade_entry_sync(photo_bytes: bytes) -> str:
+    b64 = base64.b64encode(photo_bytes).decode()
+    resp = groq_client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": (
+                    "Analiza este gráfico de TradingView. Es una entrada de trade. "
+                    "Extrae: par/instrumento, dirección (long o short), precio de entrada, "
+                    "stop loss (SL) y take profit (TP) si son visibles. "
+                    "Responde SOLO con este formato exacto: "
+                    "PAR:[par] DIRECCION:[long/short] ENTRADA:[precio] SL:[precio o null] TP:[precio o null]"
+                )},
+            ]
+        }],
+        max_tokens=120,
+    )
+    return resp.choices[0].message.content.strip()
+
+def _analyze_trade_exit_sync(photo_bytes: bytes) -> str:
+    b64 = base64.b64encode(photo_bytes).decode()
+    resp = groq_client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": (
+                    "Analiza este gráfico de TradingView. Es el cierre de un trade. "
+                    "Extrae el precio de salida/cierre. "
+                    "Responde SOLO con: SALIDA:[precio]"
+                )},
+            ]
+        }],
+        max_tokens=40,
+    )
+    return resp.choices[0].message.content.strip()
+
+def parse_receipt(text: str):
+    m_monto = re.search(r'MONTO:(\d+(?:\.\d+)?)', text)
+    m_cat   = re.search(r'CATEGORIA:(\w+)', text)
+    if m_monto and m_cat and m_cat.group(1).lower() != 'null':
+        return float(m_monto.group(1)), m_cat.group(1).lower()
+    return None, None
+
+def parse_trade_entry(text: str):
+    patterns = {
+        "par":       r'PAR:(\S+)',
+        "direccion": r'DIRECCION:(long|short)',
+        "entrada":   r'ENTRADA:(\S+)',
+        "sl":        r'SL:(\S+)',
+        "tp":        r'TP:(\S+)',
+    }
+    result = {}
+    for key, pat in patterns.items():
+        m = re.search(pat, text, re.IGNORECASE)
+        result[key] = m.group(1) if m else None
+    if not result["par"] or not result["entrada"]:
+        return None
+    # Limpiar nulls
+    for k in ("sl", "tp"):
+        if result[k] and result[k].lower() == "null":
+            result[k] = None
+    return result
+
+def parse_trade_exit(text: str):
+    m = re.search(r'SALIDA:(\S+)', text)
+    return m.group(1) if m else None
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not os.environ.get("GROQ_API_KEY"):
+        await update.message.reply_text("Las fotos no están configuradas aún.")
+        return
+
+    caption = (update.message.caption or "").lower().strip()
+    photo   = update.message.photo[-1]
+
+    try:
+        tg_file     = await context.bot.get_file(photo.file_id)
+        photo_bytes = bytes(await tg_file.download_as_bytearray())
+    except Exception as e:
+        logger.error(f"Error descargando foto: {e}")
+        await update.message.reply_text("No pude descargar la foto. Intenta de nuevo.")
+        return
+
+    # Routing: entrada/salida de trade vs ticket de gasto
+    if any(w in caption for w in ("entrada", "entry", "trade", "entré", "entre")):
+        await handle_trade_entry_photo(update, context, photo_bytes)
+    elif any(w in caption for w in ("salida", "exit", "cierre", "cerré", "cerre")):
+        await handle_trade_exit_photo(update, context, photo_bytes)
+    else:
+        await handle_receipt_photo(update, context, photo_bytes)
+
+async def handle_receipt_photo(update, context, photo_bytes):
+    msg = await update.message.reply_text("🔍 Analizando el ticket...")
+    try:
+        raw    = await asyncio.to_thread(_analyze_receipt_sync, photo_bytes)
+        amount, cat = parse_receipt(raw)
+        if amount and cat:
+            action = {"type": "gasto", "amount": amount, "category": cat}
+            set_pending_action(action)
+            await msg.edit_text(
+                f"🧾 Detecté: *${amount:.0f} en {escape_md(cat.capitalize())}*\n\n¿Lo registro?",
+                parse_mode='MarkdownV2',
+                reply_markup=confirm_keyboard()
+            )
+        else:
+            await msg.edit_text(
+                "No pude leer el monto del ticket.\nEscríbelo tú: `gasto 150 comida`"
+            )
+    except Exception as e:
+        logger.error(f"Error analizando ticket: {e}")
+        await msg.edit_text("No pude analizar la foto. Escribe el gasto manualmente.")
+
+async def handle_trade_entry_photo(update, context, photo_bytes):
+    msg = await update.message.reply_text("📊 Analizando entrada del trade...")
+    try:
+        raw   = await asyncio.to_thread(_analyze_trade_entry_sync, photo_bytes)
+        trade = parse_trade_entry(raw)
+        if trade:
+            set_trade_pending({"type": "entry", "data": trade})
+            sl_txt  = f"SL: {escape_md(str(trade['sl']))}" if trade.get("sl") else "_SL: no detectado_"
+            tp_txt  = f"TP: {escape_md(str(trade['tp']))}" if trade.get("tp") else "_TP: no detectado_"
+            await msg.edit_text(
+                f"📈 *ENTRADA DETECTADA*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"Par: *{escape_md(trade['par'])}*\n"
+                f"Dirección: *{escape_md(trade['direccion'])}*\n"
+                f"Entrada: *{escape_md(str(trade['entrada']))}*\n"
+                f"{sl_txt}\n"
+                f"{tp_txt}\n\n"
+                f"¿Es correcto?",
+                parse_mode='MarkdownV2',
+                reply_markup=trade_confirm_keyboard()
+            )
+        else:
+            await msg.edit_text(
+                "No pude leer los datos del trade\\.\n"
+                "Asegúrate de que el gráfico muestre claramente el par y el precio de entrada\\.",
+                parse_mode='MarkdownV2'
+            )
+    except Exception as e:
+        logger.error(f"Error analizando trade entrada: {e}")
+        await msg.edit_text("No pude analizar el gráfico. Intenta de nuevo.")
+
+async def handle_trade_exit_photo(update, context, photo_bytes):
+    open_trade = get_open_trade()
+    if not open_trade:
+        await update.message.reply_text(
+            "No tienes ningún trade abierto registrado\\.\n"
+            "Manda primero una foto con caption `entrada`\\.",
+            parse_mode='MarkdownV2'
+        )
+        return
+
+    msg = await update.message.reply_text("📊 Analizando cierre del trade...")
+    try:
+        raw    = await asyncio.to_thread(_analyze_trade_exit_sync, photo_bytes)
+        salida = parse_trade_exit(raw)
+        if salida:
+            set_trade_pending({
+                "type":          "exit",
+                "salida":        salida,
+                "fecha_entrada": open_trade["fecha_entrada"]
+            })
+            await msg.edit_text(
+                f"📉 *SALIDA DETECTADA*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"Trade: *{escape_md(open_trade.get('par','?'))}* {escape_md(open_trade.get('direccion','?'))}\n"
+                f"Entrada: {escape_md(str(open_trade.get('entrada','?')))}\n"
+                f"Salida: *{escape_md(str(salida))}*\n\n"
+                f"¿Es correcto?",
+                parse_mode='MarkdownV2',
+                reply_markup=trade_confirm_keyboard()
+            )
+        else:
+            await msg.edit_text("No pude leer el precio de salida. Intenta de nuevo.")
+    except Exception as e:
+        logger.error(f"Error analizando trade salida: {e}")
+        await msg.edit_text("No pude analizar el gráfico. Intenta de nuevo.")
 
 # ------------------------------------
 # PROCESAMIENTO CENTRAL DE TEXTO
@@ -738,26 +1149,23 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # 1. Flujo semanal/mensual activo
     flow = get_flow()
     if flow:
-        tipo = flow['tipo']
-        paso = flow['paso']
+        tipo      = flow['tipo']
+        paso      = flow['paso']
         respuestas = flow.get('respuestas', [])
-        preguntas = PREGUNTAS_SEMANAL if tipo == 'semanal' else PREGUNTAS_MENSUAL
-        titulo, _ = preguntas[paso]
+        preguntas  = PREGUNTAS_SEMANAL if tipo == 'semanal' else PREGUNTAS_MENSUAL
+        titulo, _  = preguntas[paso]
         respuestas.append(f"{titulo}: {text}")
-        siguiente = paso + 1
+        siguiente  = paso + 1
         if siguiente < len(preguntas):
             set_flow(tipo, siguiente, respuestas)
             await enviar_pregunta(context.bot, update.effective_chat.id, tipo, siguiente)
         else:
-            respuesta_completa = "\n\n".join(respuestas)
-            guardar_registro(tipo, respuesta_completa)
+            guardar_registro(tipo, "\n\n".join(respuestas))
             fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
-            base = "✅ *Retroalimentación semanal completa\\.* 💪" if tipo == 'semanal' else "✅ *Reflexión mensual completa\\.* 🧠"
-            frase = frase_aleatoria()
+            base  = "✅ *Retroalimentación semanal completa\\.*" if tipo == 'semanal' else "✅ *Reflexión mensual completa\\.*"
             await update.message.reply_text(
-                f"{base}\n\n_{frase}_\n\n⏰ _{fecha}_",
-                parse_mode='MarkdownV2',
-                reply_markup=menu_keyboard()
+                f"{base}\n\n_{frase_aleatoria()}_\n\n⏰ _{fecha}_",
+                parse_mode='MarkdownV2', reply_markup=menu_keyboard()
             )
         return
 
@@ -765,11 +1173,9 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if get_esperando() == 'capital':
         guardar_registro('capital', text)
         fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
-        frase = frase_aleatoria()
         await update.message.reply_text(
-            f"✅ *División de capital guardada\\.*\n\n_{frase}_\n\n⏰ _{fecha}_",
-            parse_mode='MarkdownV2',
-            reply_markup=menu_keyboard()
+            f"✅ *División de capital guardada\\.*\n\n_{frase_aleatoria()}_\n\n⏰ _{fecha}_",
+            parse_mode='MarkdownV2', reply_markup=menu_keyboard()
         )
         return
 
@@ -777,24 +1183,22 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     m = GASTO_RE.match(text.strip())
     if m:
         cantidad = float(m.group(1))
-        cat_raw = m.group(2).lower()
-        cat = registrar_gasto(cantidad, cat_raw)
+        cat      = registrar_gasto(cantidad, m.group(2).lower())
         gastos_mes = get_gastos_mes()
-        total_cat = sum(g["cantidad"] for g in gastos_mes if g["categoria"] == cat)
-        presup = PRESUPUESTO.get(cat)
-        cat_esc = escape_md(cat.capitalize())
-        if presup:
-            pct = total_cat / presup * 100
-            alert = " ⚠️ ¡Superado\\!" if total_cat > presup else f" \\({pct:.0f}% del mes\\)"
-        else:
-            alert = ""
+        total_cat  = sum(g["cantidad"] for g in gastos_mes if g["categoria"] == cat)
+        presup     = PRESUPUESTO.get(cat)
+        cat_esc    = escape_md(cat.capitalize())
+        pct_txt    = f" \\({total_cat/presup*100:.0f}% del mes\\)" if presup else ""
         await update.message.reply_text(
-            f"✅ *${cantidad:.0f} en {cat_esc} registrado*\n_{cat_esc} este mes: ${total_cat:.0f}{alert}_",
+            f"✅ *${cantidad:.0f} en {cat_esc} registrado*\n_{cat_esc} este mes: ${total_cat:.0f}{pct_txt}_",
             parse_mode='MarkdownV2'
         )
+        alert = check_budget_alert(cat)
+        if alert:
+            await update.message.reply_text(alert, parse_mode='MarkdownV2')
         return
 
-    # 4. IA — catch-all para mensajes libres
+    # 4. IA — catch-all
     if os.environ.get("GROQ_API_KEY"):
         await handle_ai_message(update, context, text)
     else:
@@ -811,32 +1215,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "✅ *Bot activado*\n\n"
-        "Puedes escribirme directamente o usar el menú\\.\n\n"
-        "Para registrar un gasto: `gasto 150 comida`\n\n"
+        "Escríbeme directamente o usa el menú\\.\n\n"
+        "• Para gastos rápidos: `gasto 150 comida`\n"
+        "• Para trades: manda foto con caption `entrada` o `salida`\n"
+        "• Para tickets: manda foto del recibo\n\n"
         "/capital \\— División de capital\n"
         "/gastos \\— Resumen gastos del mes\n"
         "/como\\_voy \\— Snapshot general\n"
+        "/trades \\— Historial de trades\n"
+        "/notas \\— Ver notas guardadas\n"
         "/historial \\— Ver registros\n"
         "/cancelar \\— Cancelar flujo activo",
-        parse_mode='MarkdownV2',
-        reply_markup=menu_keyboard()
+        parse_mode='MarkdownV2', reply_markup=menu_keyboard()
     )
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 *¿Qué quieres hacer?*",
-        parse_mode='MarkdownV2',
-        reply_markup=menu_keyboard()
-    )
+    await update.message.reply_text("📋 *¿Qué quieres hacer?*", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
 async def cmd_reporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_chat_id(update.effective_chat.id)
-    set_flow('semanal', 0, [])
+    set_chat_id(update.effective_chat.id); set_flow('semanal', 0, [])
     await enviar_pregunta(context.bot, update.effective_chat.id, 'semanal', 0)
 
 async def cmd_mensual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_chat_id(update.effective_chat.id)
-    set_flow('mensual', 0, [])
+    set_chat_id(update.effective_chat.id); set_flow('mensual', 0, [])
     await enviar_pregunta(context.bot, update.effective_chat.id, 'mensual', 0)
 
 async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -849,32 +1250,24 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_all_flows()
-    await update.message.reply_text(
-        "✅ Flujo cancelado\\.",
-        parse_mode='MarkdownV2',
-        reply_markup=menu_keyboard()
-    )
+    await update.message.reply_text("✅ Flujo cancelado\\.", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
 async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📚 *Historial — ¿Qué categoría?*",
-        parse_mode='MarkdownV2',
-        reply_markup=historial_keyboard()
-    )
+    await update.message.reply_text("📚 *Historial — ¿Qué categoría?*", parse_mode='MarkdownV2', reply_markup=historial_keyboard())
 
 async def cmd_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        generar_resumen_gastos(),
-        parse_mode='MarkdownV2',
-        reply_markup=menu_keyboard()
-    )
+    await update.message.reply_text(generar_resumen_gastos(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
 async def cmd_como_voy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        generar_como_voy(),
-        parse_mode='MarkdownV2',
-        reply_markup=menu_keyboard()
-    )
+    await update.message.reply_text(generar_como_voy(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    trades = load_data().get("trades", [])
+    await update.message.reply_text(mostrar_trades(trades), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+async def cmd_notas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    notas = load_data().get("notas", [])
+    await update.message.reply_text(mostrar_notas(notas), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
 # ------------------------------------
 # CALLBACK DE BOTONES
@@ -885,136 +1278,180 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == 'reporte':
-        set_chat_id(query.message.chat_id)
-        set_flow('semanal', 0, [])
-        await enviar_pregunta(context.bot, query.message.chat_id, 'semanal', 0)
-
-    elif data == 'mensual':
-        set_chat_id(query.message.chat_id)
-        set_flow('mensual', 0, [])
-        await enviar_pregunta(context.bot, query.message.chat_id, 'mensual', 0)
-
-    elif data == 'capital':
+    if data == 'capital':
         set_esperando('capital')
         await query.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
 
     elif data == 'historial':
-        await query.message.reply_text(
-            "📚 *Historial — ¿Qué categoría?*",
-            parse_mode='MarkdownV2',
-            reply_markup=historial_keyboard()
-        )
+        await query.message.reply_text("📚 *Historial — ¿Qué categoría?*", parse_mode='MarkdownV2', reply_markup=historial_keyboard())
 
     elif data in ('hist_semanal', 'hist_mensual', 'hist_capital', 'hist_todo'):
         todos = load_data().get("registros", [])
-        if data == 'hist_semanal':
-            filtrados = [r for r in todos if r['tipo'] == 'semanal']
-            titulo = "Reportes Semanales"
-        elif data == 'hist_mensual':
-            filtrados = [r for r in todos if r['tipo'] == 'mensual']
-            titulo = "Reflexiones Mensuales"
-        elif data == 'hist_capital':
-            filtrados = [r for r in todos if r['tipo'] == 'capital']
-            titulo = "Divisiones de Capital"
-        else:
-            filtrados = todos
-            titulo = "Todos los registros"
-        texto = mostrar_registros(filtrados, titulo)
-        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=historial_keyboard())
+        mapping = {
+            'hist_semanal': ([r for r in todos if r['tipo'] == 'semanal'], "Reportes Semanales"),
+            'hist_mensual': ([r for r in todos if r['tipo'] == 'mensual'], "Reflexiones Mensuales"),
+            'hist_capital': ([r for r in todos if r['tipo'] == 'capital'], "Divisiones de Capital"),
+            'hist_todo':    (todos, "Todos los registros"),
+        }
+        filtrados, titulo = mapping[data]
+        await query.message.reply_text(mostrar_registros(filtrados, titulo), parse_mode='MarkdownV2', reply_markup=historial_keyboard())
 
     elif data == 'gastos':
-        await query.message.reply_text(
-            generar_resumen_gastos(),
-            parse_mode='MarkdownV2',
-            reply_markup=menu_keyboard()
-        )
+        await query.message.reply_text(generar_resumen_gastos(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
     elif data == 'como_voy':
-        await query.message.reply_text(
-            generar_como_voy(),
-            parse_mode='MarkdownV2',
-            reply_markup=menu_keyboard()
-        )
+        await query.message.reply_text(generar_como_voy(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+    elif data == 'trades':
+        trades = load_data().get("trades", [])
+        await query.message.reply_text(mostrar_trades(trades), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+    elif data == 'notas':
+        notas = load_data().get("notas", [])
+        await query.message.reply_text(mostrar_notas(notas), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
     elif data == 'menu':
-        await query.message.reply_text(
-            "📋 *¿Qué quieres hacer?*",
-            parse_mode='MarkdownV2',
-            reply_markup=menu_keyboard()
-        )
+        await query.message.reply_text("📋 *¿Qué quieres hacer?*", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
     elif data in ('hab_si', 'hab_no'):
-        d = load_data()
+        d  = load_data()
         hf = d.get("habito_flow")
         if not hf:
-            await query.answer("No hay check-in activo.")
-            return
-        paso = hf["paso"]
+            await query.answer("No hay check-in activo."); return
+        paso       = hf["paso"]
         respuestas = hf["respuestas"]
         clave, pregunta_text = HABITOS[paso]
         respuesta_bool = (data == 'hab_si')
         respuestas[clave] = respuesta_bool
-
-        resp_label = "Sí ✅" if respuesta_bool else "No ❌"
         short = pregunta_text.split("¿")[-1].rstrip("?").strip() if "¿" in pregunta_text else pregunta_text
         await query.message.edit_text(
-            f"_{escape_md(short)}_: *{resp_label}*",
+            f"_{escape_md(short)}_: *{'Sí ✅' if respuesta_bool else 'No ❌'}*",
             parse_mode='MarkdownV2'
         )
-
         siguiente = paso + 1
         if siguiente < len(HABITOS):
             set_habito_flow(siguiente, respuestas)
             _, prox = HABITOS[siguiente]
-            await query.message.reply_text(
-                f"*{escape_md(prox)}*",
-                parse_mode='MarkdownV2',
-                reply_markup=habito_keyboard()
-            )
+            await query.message.reply_text(f"*{escape_md(prox)}*", parse_mode='MarkdownV2', reply_markup=habito_keyboard())
         else:
             registrar_habito(respuestas)
-            cumplidos = sum(1 for v in respuestas.values() if v)
-            total = len(HABITOS)
-            emoji = "🔥" if cumplidos == total else "💪" if cumplidos >= 2 else "😤"
-            frase = frase_aleatoria()
-            await query.message.reply_text(
-                f"✅ *Hábitos del día guardados\\. {cumplidos}/{total} {emoji}*\n\n_{frase}_",
-                parse_mode='MarkdownV2'
-            )
+            cumplidos  = sum(1 for v in respuestas.values() if v)
+            total      = len(HABITOS)
+            emoji      = "🔥" if cumplidos == total else "💪" if cumplidos >= 2 else "😤"
+            streaks    = get_streaks()
+            streak_txt = streak_text(streaks)
+            frase      = frase_aleatoria()
+            txt = f"✅ *Hábitos del día guardados\\. {cumplidos}/{total} {emoji}*\n\n"
+            if streak_txt:
+                txt += f"{streak_txt}\n"
+            txt += f"_{frase}_"
+            await query.message.reply_text(txt, parse_mode='MarkdownV2')
 
     elif data == 'accion_si':
         action = get_pending_action()
-        if not action:
-            return
+        if not action: return
         clear_pending_action()
         if action["type"] == "gasto":
-            cat = registrar_gasto(action["amount"], action["category"])
-            gastos_mes = get_gastos_mes()
-            total_cat = sum(g["cantidad"] for g in gastos_mes if g["categoria"] == cat)
-            presup = PRESUPUESTO.get(cat)
-            cat_esc = escape_md(cat.capitalize())
-            if presup:
-                pct = total_cat / presup * 100
-                extra = f" \\({pct:.0f}% del mes\\)"
-            else:
-                extra = ""
+            cat       = registrar_gasto(action["amount"], action["category"])
+            total_cat = sum(g["cantidad"] for g in get_gastos_mes() if g["categoria"] == cat)
+            presup    = PRESUPUESTO.get(cat)
+            cat_esc   = escape_md(cat.capitalize())
+            pct_txt   = f" \\({total_cat/presup*100:.0f}% del mes\\)" if presup else ""
             await query.message.reply_text(
-                f"✅ *${action['amount']:.0f} en {cat_esc} registrado*\n_{cat_esc} este mes: ${total_cat:.0f}{extra}_",
+                f"✅ *${action['amount']:.0f} en {cat_esc} registrado*\n_{cat_esc} este mes: ${total_cat:.0f}{pct_txt}_",
                 parse_mode='MarkdownV2'
             )
+            alert = check_budget_alert(cat)
+            if alert:
+                await query.message.reply_text(alert, parse_mode='MarkdownV2')
 
     elif data == 'accion_no':
         clear_pending_action()
         await query.answer("Ok, no se registró nada.")
 
+    elif data == 'trade_si':
+        tp = get_trade_pending()
+        if not tp: return
+        if tp["type"] == "entry":
+            trade = {
+                "fecha_entrada": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
+                "par":           tp["data"].get("par", "?"),
+                "direccion":     tp["data"].get("direccion", "?"),
+                "entrada":       tp["data"].get("entrada"),
+                "sl":            tp["data"].get("sl"),
+                "tp":            tp["data"].get("tp"),
+                "fecha_salida":  None,
+            }
+            guardar_trade_entrada(trade)
+            clear_trade_pending()
+            par_esc  = escape_md(trade["par"])
+            dire_esc = escape_md(trade["direccion"])
+            await query.message.edit_text(
+                f"✅ *Trade registrado*\n_{par_esc} {dire_esc} — esperando salida\\._\n\n"
+                f"_Cuando cierres, manda foto con caption_ `salida`",
+                parse_mode='MarkdownV2'
+            )
+        elif tp["type"] == "exit":
+            clear_trade_pending()
+            # Guardar salida temporal en trade_pending para usarla después de emoción
+            d = load_data()
+            d["trade_pending"] = {"type": "exit_emo", "salida": tp["salida"], "fecha_entrada": tp["fecha_entrada"]}
+            save_data(d)
+            await query.message.edit_text(
+                "¿Cómo salió el trade?",
+                reply_markup=emocion_trade_keyboard()
+            )
+
+    elif data == 'trade_no':
+        clear_trade_pending()
+        await query.message.edit_text("Entendido, descartado. Manda la foto de nuevo cuando quieras.")
+
+    elif data.startswith('trade_emo_'):
+        emocion = data[len('trade_emo_'):]
+        tp = get_trade_pending()
+        if not tp or tp.get("type") != "exit_emo": return
+        d = load_data()
+        d["trade_pending"]["emocion"] = emocion
+        save_data(d)
+        await query.message.edit_text(
+            "¿Seguiste tu estrategia en este trade?",
+            reply_markup=estrategia_keyboard()
+        )
+
+    elif data in ('trade_plan_si', 'trade_plan_no'):
+        tp = get_trade_pending()
+        if not tp or tp.get("type") != "exit_emo": return
+        siguio_plan = (data == 'trade_plan_si')
+        cerrar_trade(
+            tp["fecha_entrada"],
+            tp["salida"],
+            tp.get("emocion", "?"),
+            siguio_plan
+        )
+        clear_trade_pending()
+
+        # Mostrar resumen del trade
+        trades = load_data().get("trades", [])
+        trade  = next((t for t in reversed(trades) if t.get("fecha_entrada") == tp["fecha_entrada"]), None)
+        r_val  = trade.get("resultado_r") if trade else None
+        r_txt  = escape_md(f"{r_val:+.2f}R") if r_val is not None else "sin SL registrado"
+        emoji  = "✅" if (r_val or 0) > 0 else "🔴" if r_val is not None else "📊"
+        plan_txt = "Sí" if siguio_plan else "No"
+        await query.message.edit_text(
+            f"{emoji} *Trade cerrado*\n\n"
+            f"Resultado: *{r_txt}*\n"
+            f"Emoción: {escape_md(tp.get('emocion','?'))}\n"
+            f"¿Siguió el plan?: {plan_txt}\n\n"
+            f"_{frase_aleatoria()}_",
+            parse_mode='MarkdownV2'
+        )
+
 # ------------------------------------
-# HANDLER DE MENSAJES DE TEXTO
+# HANDLER DE MENSAJES
 # ------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    await process_text_message(update, context, text)
+    await process_text_message(update, context, update.message.text or "")
 
 # ------------------------------------
 # JOBS PROGRAMADOS
@@ -1022,11 +1459,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def job_semanal(context: ContextTypes.DEFAULT_TYPE):
     chat_id = get_chat_id()
-    if not chat_id:
-        return
-    # Enviar resumen de la semana antes de las preguntas
-    resumen = generar_resumen_semanal()
-    await context.bot.send_message(chat_id, resumen, parse_mode='MarkdownV2')
+    if not chat_id: return
+    await context.bot.send_message(chat_id, generar_resumen_semanal(), parse_mode='MarkdownV2')
     set_flow('semanal', 0, [])
     await enviar_pregunta(context.bot, chat_id, 'semanal', 0)
 
@@ -1058,17 +1492,13 @@ async def job_enviar_informe(context: ContextTypes.DEFAULT_TYPE):
 
 async def job_habitos(context: ContextTypes.DEFAULT_TYPE):
     chat_id = get_chat_id()
-    if not chat_id:
-        return
+    if not chat_id: return
     set_habito_flow(0, {})
     _, primera = HABITOS[0]
     await context.bot.send_message(
         chat_id,
-        f"🌙 *RAÚL — CHECK\\-IN DIARIO*\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"*{escape_md(primera)}*",
-        parse_mode='MarkdownV2',
-        reply_markup=habito_keyboard()
+        f"🌙 *RAÚL — CHECK\\-IN DIARIO*\n━━━━━━━━━━━━━━━\n\n*{escape_md(primera)}*",
+        parse_mode='MarkdownV2', reply_markup=habito_keyboard()
     )
 
 # ------------------------------------
@@ -1086,15 +1516,17 @@ def main():
     app.add_handler(CommandHandler("historial", cmd_historial))
     app.add_handler(CommandHandler("gastos",    cmd_gastos))
     app.add_handler(CommandHandler("como_voy",  cmd_como_voy))
+    app.add_handler(CommandHandler("trades",    cmd_trades))
+    app.add_handler(CommandHandler("notas",     cmd_notas))
     app.add_handler(CommandHandler("cancelar",  cmd_cancelar))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     jq = app.job_queue
     mx = TIMEZONE
-
     jq.run_daily(job_semanal,        time=dt_time(21, 10, tzinfo=mx), days=(3,), name="semanal")
     jq.run_daily(job_mensual,        time=dt_time(8,  0,  tzinfo=mx), days=(4,), name="mensual")
     jq.run_daily(job_capital,        time=dt_time(8,  0,  tzinfo=mx),            name="capital")
