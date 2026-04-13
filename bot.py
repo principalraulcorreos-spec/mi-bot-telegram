@@ -2281,9 +2281,19 @@ async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = now.date()
         label  = f"{now.strftime('%A %d/%m')}"
 
-    await update.message.reply_text("🔍 Consultando ForexFactory...")
-    events = await asyncio.to_thread(_fetch_forex_news_sync, target)
-    await update.message.reply_text(_format_forex_news(events, label), parse_mode='MarkdownV2')
+    msg = await update.message.reply_text("🔍 Consultando ForexFactory...")
+    try:
+        events = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_forex_news_sync, target),
+            timeout=20
+        )
+        texto = _format_forex_news(events, label)
+        await update.message.reply_text(texto, parse_mode='MarkdownV2')
+    except asyncio.TimeoutError:
+        await msg.edit_text("⏱ ForexFactory tardó demasiado. Intenta de nuevo.")
+    except Exception as e:
+        logger.error(f"cmd_noticias error: {e}")
+        await msg.edit_text(f"❌ Error: {e}")
 
 
 async def job_forex_news(context: ContextTypes.DEFAULT_TYPE):
