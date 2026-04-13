@@ -1814,33 +1814,51 @@ def _get_calendar_service():
 
 
 def _listar_eventos_sync(days_ahead: int = 7) -> list[dict]:
-    """Lista los próximos eventos del calendario principal."""
+    """Lista los próximos eventos de todos los calendarios del usuario."""
     service = _get_calendar_service()
     if not service:
         return []
     try:
-        now    = datetime.now(TIMEZONE)
-        t_min  = now.isoformat()
-        t_max  = (now + timedelta(days=days_ahead)).isoformat()
-        result = service.events().list(
-            calendarId='primary',
-            timeMin=t_min,
-            timeMax=t_max,
-            maxResults=15,
-            singleEvents=True,
-            orderBy='startTime',
-        ).execute()
-        events = []
-        for e in result.get('items', []):
-            start = e['start'].get('dateTime', e['start'].get('date', ''))
-            events.append({
-                'id':      e['id'],
-                'titulo':  e.get('summary', 'Sin título'),
-                'inicio':  start,
-                'lugar':   e.get('location', ''),
-                'desc':    e.get('description', ''),
-            })
-        return events
+        now   = datetime.now(TIMEZONE)
+        t_min = now.isoformat()
+        t_max = (now + timedelta(days=days_ahead)).isoformat()
+
+        # Obtener todos los calendarios del usuario
+        cal_list = service.calendarList().list().execute()
+        calendars = [c['id'] for c in cal_list.get('items', [])]
+        if not calendars:
+            calendars = ['primary']
+
+        all_events = []
+        seen_ids   = set()
+        for cal_id in calendars:
+            try:
+                result = service.events().list(
+                    calendarId=cal_id,
+                    timeMin=t_min,
+                    timeMax=t_max,
+                    maxResults=20,
+                    singleEvents=True,
+                    orderBy='startTime',
+                ).execute()
+                for e in result.get('items', []):
+                    if e['id'] in seen_ids:
+                        continue
+                    seen_ids.add(e['id'])
+                    start = e['start'].get('dateTime', e['start'].get('date', ''))
+                    all_events.append({
+                        'id':     e['id'],
+                        'titulo': e.get('summary', 'Sin título'),
+                        'inicio': start,
+                        'lugar':  e.get('location', ''),
+                        'desc':   e.get('description', ''),
+                    })
+            except Exception:
+                continue  # calendario sin acceso, ignorar
+
+        # Ordenar por fecha de inicio
+        all_events.sort(key=lambda x: x['inicio'])
+        return all_events[:20]
     except Exception as e:
         logger.error(f"Calendar list error: {e}")
         return []
