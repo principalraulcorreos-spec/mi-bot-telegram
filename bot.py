@@ -318,12 +318,13 @@ def load_data():
         data.setdefault("trades", [])
         data.setdefault("notas", [])
         data.setdefault("trade_pending", None)
+        data.setdefault("trade_fotos", [])
         return data
     return {
         "registros": [], "chat_id": None, "flow": None, "esperando": None,
         "gastos": [], "habitos": [], "habito_flow": None,
         "ai_history": [], "ai_last_message": None, "pending_action": None,
-        "trades": [], "notas": [], "trade_pending": None,
+        "trades": [], "notas": [], "trade_pending": None, "trade_fotos": [],
     }
 
 def save_data(data):
@@ -749,7 +750,7 @@ def mostrar_registros(registros, titulo):
 def mostrar_trades(trades):
     cerrados = [t for t in trades if t.get("fecha_salida")]
     if not cerrados:
-        return "📈 *Trades*\n\n_Sin trades cerrados aún\\._\n\n_Manda una foto con caption_ `entrada`"
+        return "📈 *Trades*\n\n_Sin trades cerrados aún\\._"
     texto = "📈 *ÚLTIMOS TRADES*\n━━━━━━━━━━━━━━━\n\n"
     for t in reversed(cerrados[-5:]):
         par   = escape_md(t.get("par", "?"))
@@ -1104,28 +1105,33 @@ def parse_trade_exit(text: str):
     return m.group(1) if m else None
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.environ.get("GROQ_API_KEY"):
-        await update.message.reply_text("Las fotos no están configuradas aún.")
-        return
-
-    caption = (update.message.caption or "").lower().strip()
+    caption = (update.message.caption or "").strip()
+    caption_lower = caption.lower()
     photo   = update.message.photo[-1]
 
-    try:
-        tg_file     = await context.bot.get_file(photo.file_id)
-        photo_bytes = bytes(await tg_file.download_as_bytearray())
-    except Exception as e:
-        logger.error(f"Error descargando foto: {e}")
-        await update.message.reply_text("No pude descargar la foto. Intenta de nuevo.")
+    # Si el caption indica claramente que es un ticket/gasto → analizar recibo
+    if any(w in caption_lower for w in ("ticket", "recibo", "gasto", "compra", "factura")):
+        try:
+            tg_file     = await context.bot.get_file(photo.file_id)
+            photo_bytes = bytes(await tg_file.download_as_bytearray())
+        except Exception as e:
+            logger.error(f"Error descargando foto: {e}")
+            await update.message.reply_text("No pude descargar la foto. Intenta de nuevo.")
+            return
+        await handle_receipt_photo(update, context, photo_bytes)
         return
 
-    # Routing: entrada/salida de trade vs ticket de gasto
-    if any(w in caption for w in ("entrada", "entry", "trade", "entré", "entre")):
-        await handle_trade_entry_photo(update, context, photo_bytes)
-    elif any(w in caption for w in ("salida", "exit", "cierre", "cerré", "cerre")):
-        await handle_trade_exit_photo(update, context, photo_bytes)
-    else:
-        await handle_receipt_photo(update, context, photo_bytes)
+    # Cualquier otra foto → guardar como foto de trade
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    data  = load_data()
+    data["trade_fotos"].append({
+        "file_id": photo.file_id,
+        "fecha":   fecha,
+        "caption": caption,
+    })
+    save_data(data)
+    await update.message.reply_text(f"📸 Foto guardada ({fecha})")
+
 
 async def handle_receipt_photo(update, context, photo_bytes):
     msg = await update.message.reply_text("🔍 Analizando el ticket...")
@@ -1147,73 +1153,6 @@ async def handle_receipt_photo(update, context, photo_bytes):
     except Exception as e:
         logger.error(f"Error analizando ticket: {e}")
         await msg.edit_text("No pude analizar la foto. Escribe el gasto manualmente.")
-
-async def handle_trade_entry_photo(update, context, photo_bytes):
-    msg = await update.message.reply_text("📊 Analizando entrada del trade...")
-    try:
-        raw   = await asyncio.to_thread(_analyze_trade_entry_sync, photo_bytes)
-        trade = parse_trade_entry(raw)
-        if trade:
-            set_trade_pending({"type": "entry", "data": trade})
-            sl_txt  = f"SL: {escape_md(str(trade['sl']))}" if trade.get("sl") else "_SL: no detectado_"
-            tp_txt  = f"TP: {escape_md(str(trade['tp']))}" if trade.get("tp") else "_TP: no detectado_"
-            await msg.edit_text(
-                f"📈 *ENTRADA DETECTADA*\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"Par: *{escape_md(trade['par'])}*\n"
-                f"Dirección: *{escape_md(trade['direccion'])}*\n"
-                f"Entrada: *{escape_md(str(trade['entrada']))}*\n"
-                f"{sl_txt}\n"
-                f"{tp_txt}\n\n"
-                f"¿Es correcto?",
-                parse_mode='MarkdownV2',
-                reply_markup=trade_confirm_keyboard()
-            )
-        else:
-            await msg.edit_text(
-                "No pude leer los datos del trade\\.\n"
-                "Asegúrate de que el gráfico muestre claramente el par y el precio de entrada\\.",
-                parse_mode='MarkdownV2'
-            )
-    except Exception as e:
-        logger.error(f"Error analizando trade entrada: {e}")
-        await msg.edit_text("No pude analizar el gráfico. Intenta de nuevo.")
-
-async def handle_trade_exit_photo(update, context, photo_bytes):
-    open_trade = get_open_trade()
-    if not open_trade:
-        await update.message.reply_text(
-            "No tienes ningún trade abierto registrado\\.\n"
-            "Manda primero una foto con caption `entrada`\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-
-    msg = await update.message.reply_text("📊 Analizando cierre del trade...")
-    try:
-        raw    = await asyncio.to_thread(_analyze_trade_exit_sync, photo_bytes)
-        salida = parse_trade_exit(raw)
-        if salida:
-            set_trade_pending({
-                "type":          "exit",
-                "salida":        salida,
-                "fecha_entrada": open_trade["fecha_entrada"]
-            })
-            await msg.edit_text(
-                f"📉 *SALIDA DETECTADA*\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"Trade: *{escape_md(open_trade.get('par','?'))}* {escape_md(open_trade.get('direccion','?'))}\n"
-                f"Entrada: {escape_md(str(open_trade.get('entrada','?')))}\n"
-                f"Salida: *{escape_md(str(salida))}*\n\n"
-                f"¿Es correcto?",
-                parse_mode='MarkdownV2',
-                reply_markup=trade_confirm_keyboard()
-            )
-        else:
-            await msg.edit_text("No pude leer el precio de salida. Intenta de nuevo.")
-    except Exception as e:
-        logger.error(f"Error analizando trade salida: {e}")
-        await msg.edit_text("No pude analizar el gráfico. Intenta de nuevo.")
 
 # ------------------------------------
 # PROCESAMIENTO CENTRAL DE TEXTO
@@ -1318,12 +1257,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ *Bot activado*\n\n"
         "Escríbeme directamente o usa el menú\\.\n\n"
         "• Para gastos rápidos: `gasto 150 comida`\n"
-        "• Para trades: manda foto con caption `entrada` o `salida`\n"
-        "• Para tickets: manda foto del recibo\n\n"
+        "• Para trades: manda cualquier foto y se guarda automáticamente\n"
+        "• Para tickets: manda foto con caption `ticket` o `gasto`\n\n"
         "/capital \\— División de capital\n"
         "/gastos \\— Resumen gastos del mes\n"
         "/como\\_voy \\— Snapshot general\n"
         "/trades \\— Historial de trades\n"
+        "/fotos\\_trades \\— Ver fotos de trades por fecha\n"
         "/notas \\— Ver notas guardadas\n"
         "/historial \\— Ver registros\n"
         "/cancelar \\— Cancelar flujo activo",
@@ -1365,6 +1305,45 @@ async def cmd_como_voy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = load_data().get("trades", [])
     await update.message.reply_text(mostrar_trades(trades), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+
+async def cmd_fotos_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra fotos de trades. Uso: /fotos_trades [fecha YYYY-MM-DD o DD/MM]"""
+    data  = load_data()
+    fotos = data.get("trade_fotos", [])
+    if not fotos:
+        await update.message.reply_text("No tienes fotos de trades guardadas.")
+        return
+
+    # Filtrar por fecha si se pasa argumento
+    filtro = " ".join(context.args).strip() if context.args else ""
+    if filtro:
+        # Normalizar: DD/MM → busca por mes y día; YYYY-MM-DD → exacto
+        if "/" in filtro:
+            partes = filtro.split("/")
+            if len(partes) == 2:
+                filtro_norm = f"-{partes[1].zfill(2)}-{partes[0].zfill(2)}"  # -MM-DD
+            else:
+                filtro_norm = filtro
+        else:
+            filtro_norm = filtro
+        fotos = [f for f in fotos if filtro_norm in f["fecha"]]
+
+    if not fotos:
+        await update.message.reply_text(f"No hay fotos para '{filtro}'.")
+        return
+
+    await update.message.reply_text(f"📸 {len(fotos)} foto(s) encontrada(s):")
+    for foto in fotos[-10:]:  # máximo 10
+        cap = foto.get("caption", "")
+        fecha = foto.get("fecha", "")
+        texto = f"📅 {fecha}" + (f"\n{cap}" if cap else "")
+        try:
+            await update.message.reply_photo(photo=foto["file_id"], caption=texto)
+        except Exception as e:
+            logger.error(f"Error enviando foto trade: {e}")
+            await update.message.reply_text(f"No pude enviar foto del {fecha}")
+
 
 async def cmd_notas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notas = load_data().get("notas", [])
@@ -2237,7 +2216,8 @@ def main():
     app.add_handler(CommandHandler("historial", cmd_historial))
     app.add_handler(CommandHandler("gastos",    cmd_gastos))
     app.add_handler(CommandHandler("como_voy",  cmd_como_voy))
-    app.add_handler(CommandHandler("trades",    cmd_trades))
+    app.add_handler(CommandHandler("trades",      cmd_trades))
+    app.add_handler(CommandHandler("fotos_trades", cmd_fotos_trades))
     app.add_handler(CommandHandler("notas",        cmd_notas))
     app.add_handler(CommandHandler("cancelar",     cmd_cancelar))
     app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
