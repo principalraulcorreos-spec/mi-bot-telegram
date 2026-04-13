@@ -2171,6 +2171,137 @@ def gmail_cambiar_keyboard(short_id: str) -> InlineKeyboardMarkup:
     ])
 
 
+# ------------------------------------
+# FOREX FACTORY — NOTICIAS ALTO IMPACTO
+# ------------------------------------
+
+def _fetch_forex_news_sync(target_date=None):
+    """Descarga eventos de alto impacto de ForexFactory para una fecha dada."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    et_tz = pytz.timezone('America/New_York')  # ForexFactory usa ET
+    mx_tz = TIMEZONE
+
+    if target_date is None:
+        target_date = datetime.now(mx_tz).date()
+
+    # Intentar semana actual y siguiente
+    urls = [
+        "https://www.forexfactory.com/ffcal_week_this.xml",
+        "https://www.forexfactory.com/ffcal_week_next.xml",
+    ]
+
+    all_events = []
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+        except Exception as e:
+            logger.warning(f"ForexFactory fetch error ({url}): {e}")
+            continue
+
+        for ev in root.findall('event'):
+            impact = ev.findtext('impact', '').strip().lower()
+            if impact != 'high':
+                continue
+
+            title    = ev.findtext('title', '').strip()
+            country  = ev.findtext('country', '').strip()
+            date_str = ev.findtext('date', '').strip()
+            time_str = ev.findtext('time', '').strip()
+            forecast = ev.findtext('forecast', '').strip()
+            previous = ev.findtext('previous', '').strip()
+
+            try:
+                # Formato: "Sunday, Apr 13, 2026"  hora: "8:30am"
+                if time_str.lower() in ('all day', 'tentative', ''):
+                    # Parsear solo la fecha
+                    date_obj = datetime.strptime(date_str, "%A, %b %d, %Y").date()
+                    if date_obj != target_date:
+                        continue
+                    hora_mx  = "Todo el día"
+                    sort_key = 0
+                else:
+                    dt_str  = f"{date_str} {time_str.upper()}"
+                    dt_et   = datetime.strptime(dt_str, "%A, %b %d, %Y %I:%M%p")
+                    dt_et   = et_tz.localize(dt_et)
+                    dt_mx   = dt_et.astimezone(mx_tz)
+                    if dt_mx.date() != target_date:
+                        continue
+                    hora_mx  = dt_mx.strftime("%H:%M")
+                    sort_key = dt_mx.hour * 60 + dt_mx.minute
+            except Exception as e:
+                logger.warning(f"FF parse error '{date_str} {time_str}': {e}")
+                continue
+
+            all_events.append({
+                'title':    title,
+                'country':  country,
+                'hora_mx':  hora_mx,
+                'forecast': forecast,
+                'previous': previous,
+                'sort_key': sort_key,
+            })
+
+    all_events.sort(key=lambda x: x['sort_key'])
+    return all_events
+
+
+def _format_forex_news(events, fecha_label="hoy"):
+    if not events:
+        return f"📰 Sin noticias de alto impacto {fecha_label}."
+    lines = [f"🔴 *NOTICIAS ALTO IMPACTO — {escape_md(fecha_label.upper())}*\n━━━━━━━━━━━━━━━\n"]
+    for e in events:
+        pais     = escape_md(e['country'])
+        titulo   = escape_md(e['title'])
+        hora     = escape_md(e['hora_mx'])
+        fc_txt   = f" \\| prev: {escape_md(e['previous'])}" if e.get('previous') else ""
+        fore_txt = f" \\| prev\\. est: {escape_md(e['forecast'])}" if e.get('forecast') else ""
+        lines.append(f"🕐 *{hora}* — {pais} — {titulo}{fc_txt}{fore_txt}")
+    lines.append("\n_Hora Ciudad de México_")
+    return "\n".join(lines)
+
+
+async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra noticias de alto impacto del día (o mañana con /noticias mañana)."""
+    arg = " ".join(context.args).strip().lower() if context.args else ""
+    mx  = TIMEZONE
+    now = datetime.now(mx)
+
+    if arg in ("mañana", "manana", "tomorrow"):
+        target = (now + timedelta(days=1)).date()
+        label  = "mañana"
+    else:
+        target = now.date()
+        label  = f"{now.strftime('%A %d/%m')}"
+
+    await update.message.reply_text("🔍 Consultando ForexFactory...")
+    events = await asyncio.to_thread(_fetch_forex_news_sync, target)
+    await update.message.reply_text(_format_forex_news(events, label), parse_mode='MarkdownV2')
+
+
+async def job_forex_news(context: ContextTypes.DEFAULT_TYPE):
+    """Job diario: manda noticias de alto impacto a las 6am México."""
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    mx     = TIMEZONE
+    target = datetime.now(mx).date()
+    label  = datetime.now(mx).strftime("%A %d/%m")
+    try:
+        events = await asyncio.to_thread(_fetch_forex_news_sync, target)
+        msg    = _format_forex_news(events, label)
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='MarkdownV2')
+    except Exception as e:
+        logger.error(f"job_forex_news error: {e}")
+
+
 async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: float = 0.05):
     """Corre cada 30 minutos. Lee los dos correos y manda notificaciones de nuevas transacciones."""
     tokens = {
@@ -2257,6 +2388,7 @@ def main():
     app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
     app.add_handler(CommandHandler("agenda",       cmd_agenda))
     app.add_handler(CommandHandler("cal_debug",    cmd_cal_debug))
+    app.add_handler(CommandHandler("noticias",     cmd_noticias))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -2271,6 +2403,7 @@ def main():
     jq.run_daily(job_enviar_informe, time=dt_time(8,  0,  tzinfo=mx),            name="enviar_informe")
     jq.run_daily(job_pedir_informe,  time=dt_time(20, 30, tzinfo=mx),            name="pedir_informe")
     jq.run_daily(job_habitos,        time=dt_time(21, 0,  tzinfo=mx),            name="habitos")
+    jq.run_daily(job_forex_news,     time=dt_time(6,  0,  tzinfo=mx),            name="forex_news")
     # Gmail: revisar cada 30 minutos si las credenciales están configuradas
     if os.environ.get("GMAIL_CLIENT_ID"):
         jq.run_repeating(job_gmail_check, interval=60, first=30, name="gmail")
