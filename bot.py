@@ -1013,7 +1013,7 @@ def _call_sofia_sync(user_message: str, history: list) -> str:
         + [{"role": "user", "content": user_message}]
     )
     resp = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=messages,
         max_tokens=500,
         temperature=0.85,
@@ -1026,7 +1026,7 @@ async def call_sofia(user_message: str, history: list) -> str:
         return await asyncio.to_thread(_call_sofia_sync, user_message, history)
     except Exception as e:
         logger.error(f"Error Sofía: {e}")
-        return f"[DEBUG] Error: {type(e).__name__}: {str(e)[:300]}"
+        return "No pude responder en este momento. Intenta de nuevo."
 
 
 async def handle_sofia_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
