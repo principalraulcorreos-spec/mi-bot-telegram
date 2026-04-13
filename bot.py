@@ -849,25 +849,33 @@ CONTEXTO ACTUAL ({now.strftime('%d/%m/%Y %H:%M')} Ciudad de México):
 {trades_str}
 - Notas guardadas:
 {notas_str}
+- Agenda próximas 48h:
+{get_calendar_context()}
 
 INSTRUCCIONES:
 - Habla de tú a Raúl, en español mexicano, informal pero directo y con carácter
 - Eres SU asistente personal — conoces su vida, sus metas, sus puntos débiles
 - Respuestas cortas (máximo 3-4 líneas). Sin markdown (sin asteriscos, guiones bajos, etc.)
 - Usa los datos reales del contexto para responder preguntas específicas
-- Si pregunta "¿cuánto gasté en X?" o "¿cómo van mis hábitos?" responde con los números exactos del contexto
+- Si pregunta sobre su agenda, usa los datos de calendario del contexto
 - Conéctate con lo que sabes de él: trading, fe, abuelo, Nallelita, disciplina
 
 DETECCIÓN DE ACCIONES — incluye al final de tu respuesta (línea separada) si aplica:
 
-Si detectas un gasto claro con monto y categoría:
+Si detectas un gasto claro con monto:
 ACCION_GASTO:[monto]:[categoria]
-Ejemplo: ACCION_GASTO:150:comida
-Categorías válidas: comida, transporte, capricho, ropa, salud, otros
+Categorías: comida, transporte, capricho, salud, otros
 
-Si detectas que quiere guardar una nota/recordatorio:
-ACCION_NOTA:[texto de la nota]
-Ejemplo: ACCION_NOTA:Llamar al contador el martes 15
+Si quiere guardar una nota/recordatorio:
+ACCION_NOTA:[texto]
+
+Si quiere VER su agenda (hoy, mañana, semana, etc):
+ACCION_CAL_VER:[dias]
+Ejemplo: ACCION_CAL_VER:1 (hoy), ACCION_CAL_VER:2 (mañana), ACCION_CAL_VER:7 (semana)
+
+Si quiere CREAR un evento en el calendario:
+ACCION_CAL_CREAR:[titulo]|[YYYY-MM-DD]|[HH:MM]|[duracion_minutos]
+Ejemplo: ACCION_CAL_CREAR:Dentista|2026-04-15|15:00|60
 
 Solo incluye UNA acción por respuesta y solo si estás muy seguro."""
 
@@ -908,6 +916,22 @@ def parse_ai_response(text: str):
             texto = line[len('ACCION_NOTA:'):].strip()
             if texto:
                 action = {"type": "nota", "texto": texto}
+        elif line.startswith('ACCION_CAL_VER:'):
+            dias_str = line[len('ACCION_CAL_VER:'):].strip()
+            try:
+                action = {"type": "cal_ver", "dias": int(dias_str)}
+            except ValueError:
+                action = {"type": "cal_ver", "dias": 7}
+        elif line.startswith('ACCION_CAL_CREAR:'):
+            partes = line[len('ACCION_CAL_CREAR:'):].strip().split('|')
+            if len(partes) >= 3:
+                action = {
+                    "type":     "cal_crear",
+                    "titulo":   partes[0].strip(),
+                    "fecha":    partes[1].strip(),
+                    "hora":     partes[2].strip(),
+                    "duracion": int(partes[3].strip()) if len(partes) > 3 else 60,
+                }
         else:
             clean.append(line)
     return '\n'.join(clean).strip(), action
@@ -930,6 +954,27 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             f"{message_text}\n\n📝 _Nota guardada\\._",
             parse_mode='MarkdownV2'
         )
+    elif action and action["type"] == "cal_ver":
+        dias   = action["dias"]
+        eventos = await asyncio.to_thread(_listar_eventos_sync, dias)
+        texto  = formatear_eventos(eventos)
+        if message_text:
+            await update.message.reply_text(message_text)
+        await update.message.reply_text(texto, parse_mode='MarkdownV2')
+    elif action and action["type"] == "cal_crear":
+        ok = await asyncio.to_thread(
+            _crear_evento_sync,
+            action["titulo"], action["fecha"], action["hora"], action["duracion"]
+        )
+        titulo_esc = escape_md(action["titulo"])
+        fecha_esc  = escape_md(f"{action['fecha']} {action['hora']}")
+        if ok:
+            resp = f"✅ *{titulo_esc}* agendado para _{fecha_esc}_"
+        else:
+            resp = "No pude crear el evento. Verifica que el calendario esté conectado."
+        if message_text:
+            await update.message.reply_text(message_text)
+        await update.message.reply_text(resp, parse_mode='MarkdownV2')
     else:
         await update.message.reply_text(message_text)
 
@@ -1324,6 +1369,10 @@ async def cmd_notas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notas = load_data().get("notas", [])
     await update.message.reply_text(mostrar_notas(notas), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
+async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    eventos = await asyncio.to_thread(_listar_eventos_sync, 7)
+    await update.message.reply_text(formatear_eventos(eventos), parse_mode='MarkdownV2')
+
 async def cmd_gmail_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.environ.get("GMAIL_CLIENT_ID"):
         await update.message.reply_text("Gmail no está configurado\\.", parse_mode='MarkdownV2')
@@ -1686,6 +1735,149 @@ async def job_habitos(context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ------------------------------------
+# GOOGLE CALENDAR
+# ------------------------------------
+
+CALENDAR_TOKEN = None  # se lee de env var en runtime
+
+def _get_calendar_service():
+    """Construye el servicio Google Calendar con el token de cuenta 1."""
+    try:
+        from google.oauth2.credentials import Credentials
+        import google.auth.transport.requests
+        import googleapiclient.discovery
+
+        refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN_1", "")
+        if not refresh_token:
+            return None
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=os.environ.get("GMAIL_CLIENT_ID", ""),
+            client_secret=os.environ.get("GMAIL_CLIENT_SECRET", ""),
+            scopes=[
+                'https://www.googleapis.com/auth/gmail.readonly',
+                'https://www.googleapis.com/auth/calendar',
+            ],
+        )
+        req = google.auth.transport.requests.Request()
+        creds.refresh(req)
+        return googleapiclient.discovery.build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        logger.warning(f"Calendar service error: {e}")
+        return None
+
+
+def _listar_eventos_sync(days_ahead: int = 7) -> list[dict]:
+    """Lista los próximos eventos del calendario principal."""
+    service = _get_calendar_service()
+    if not service:
+        return []
+    try:
+        now    = datetime.now(TIMEZONE)
+        t_min  = now.isoformat()
+        t_max  = (now + timedelta(days=days_ahead)).isoformat()
+        result = service.events().list(
+            calendarId='primary',
+            timeMin=t_min,
+            timeMax=t_max,
+            maxResults=15,
+            singleEvents=True,
+            orderBy='startTime',
+        ).execute()
+        events = []
+        for e in result.get('items', []):
+            start = e['start'].get('dateTime', e['start'].get('date', ''))
+            events.append({
+                'id':      e['id'],
+                'titulo':  e.get('summary', 'Sin título'),
+                'inicio':  start,
+                'lugar':   e.get('location', ''),
+                'desc':    e.get('description', ''),
+            })
+        return events
+    except Exception as e:
+        logger.error(f"Calendar list error: {e}")
+        return []
+
+
+def _crear_evento_sync(titulo: str, fecha_iso: str, hora: str, duracion_min: int = 60) -> bool:
+    """Crea un evento en Google Calendar. fecha_iso: YYYY-MM-DD, hora: HH:MM"""
+    service = _get_calendar_service()
+    if not service:
+        return False
+    try:
+        tz_str = str(TIMEZONE)
+        inicio = f"{fecha_iso}T{hora}:00"
+        from datetime import datetime as _dt
+        inicio_dt = _dt.fromisoformat(inicio)
+        fin_dt    = inicio_dt + timedelta(minutes=duracion_min)
+        fin       = fin_dt.strftime("%Y-%m-%dT%H:%M:00")
+
+        event = {
+            'summary':  titulo,
+            'start':    {'dateTime': inicio, 'timeZone': tz_str},
+            'end':      {'dateTime': fin,    'timeZone': tz_str},
+        }
+        service.events().insert(calendarId='primary', body=event).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Calendar create error: {e}")
+        return False
+
+
+def formatear_eventos(eventos: list[dict]) -> str:
+    """Formatea la lista de eventos para Telegram MarkdownV2."""
+    if not eventos:
+        return "📅 _No tienes eventos próximos\\._"
+    now = datetime.now(TIMEZONE)
+    texto = "📅 *AGENDA*\n━━━━━━━━━━━━━━━\n\n"
+    for e in eventos:
+        inicio = e['inicio']
+        try:
+            if 'T' in inicio:
+                dt = datetime.fromisoformat(inicio.replace('Z', '+00:00')).astimezone(TIMEZONE)
+                dia   = dt.strftime('%a %d/%m')
+                hora  = dt.strftime('%H:%M')
+                label = escape_md(f"{dia} {hora}")
+            else:
+                dt    = datetime.fromisoformat(inicio)
+                label = escape_md(dt.strftime('%a %d/%m'))
+                hora  = "todo el día"
+        except Exception:
+            label = escape_md(inicio[:10])
+
+        titulo = escape_md(e['titulo'])
+        lugar  = f" 📍 {escape_md(e['lugar'])}" if e.get('lugar') else ""
+        texto += f"🔹 *{titulo}*\n   _{label}{lugar}_\n\n"
+    return texto.strip()
+
+
+def get_calendar_context() -> str:
+    """Contexto de calendario para el prompt de la IA (hoy + mañana)."""
+    try:
+        eventos = _listar_eventos_sync(days_ahead=2)
+        if not eventos:
+            return "Sin eventos en los próximos 2 días."
+        lines = []
+        for e in eventos:
+            inicio = e['inicio']
+            try:
+                if 'T' in inicio:
+                    dt   = datetime.fromisoformat(inicio.replace('Z', '+00:00')).astimezone(TIMEZONE)
+                    when = dt.strftime('%a %d/%m %H:%M')
+                else:
+                    when = inicio
+            except Exception:
+                when = inicio
+            lines.append(f"  {when}: {e['titulo']}")
+        return "\n".join(lines)
+    except Exception:
+        return "No disponible."
+
+
+# ------------------------------------
 # GMAIL — DETECCIÓN DE TRANSACCIONES
 # ------------------------------------
 
@@ -1985,6 +2177,7 @@ def main():
     app.add_handler(CommandHandler("notas",        cmd_notas))
     app.add_handler(CommandHandler("cancelar",     cmd_cancelar))
     app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
+    app.add_handler(CommandHandler("agenda",       cmd_agenda))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
