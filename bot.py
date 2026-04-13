@@ -1373,6 +1373,42 @@ async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     eventos = await asyncio.to_thread(_listar_eventos_sync, 7)
     await update.message.reply_text(formatear_eventos(eventos), parse_mode='MarkdownV2')
 
+
+async def cmd_cal_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Diagnóstico del servicio de Google Calendar."""
+    lines = []
+    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
+    token1        = os.environ.get("GMAIL_REFRESH_TOKEN_1", "")
+
+    lines.append(f"client_id: {'✅ ' + client_id[:20] + '...' if client_id else '❌ no configurado'}")
+    lines.append(f"client_secret: {'✅ configurado' if client_secret else '❌ no configurado'}")
+    lines.append(f"token_1: {'✅ ' + token1[:20] + '...' if token1 else '❌ no configurado'}")
+
+    try:
+        from google.oauth2.credentials import Credentials
+        import google.auth.transport.requests
+
+        creds = Credentials(
+            token=None,
+            refresh_token=token1,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=[
+                'https://www.googleapis.com/auth/gmail.readonly',
+                'https://www.googleapis.com/auth/calendar',
+            ],
+        )
+        req = google.auth.transport.requests.Request()
+        creds.refresh(req)
+        lines.append("refresh token: ✅ válido")
+        lines.append(f"access token: ✅ {creds.token[:20]}...")
+    except Exception as e:
+        lines.append(f"refresh token: ❌ ERROR: {e}")
+
+    await update.message.reply_text("\n".join(lines))
+
 async def cmd_gmail_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.environ.get("GMAIL_CLIENT_ID"):
         await update.message.reply_text("Gmail no está configurado\\.", parse_mode='MarkdownV2')
@@ -1747,15 +1783,22 @@ def _get_calendar_service():
         import google.auth.transport.requests
         import googleapiclient.discovery
 
+        client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
+        client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
         refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN_1", "")
         if not refresh_token:
+            logger.warning("Calendar: GMAIL_REFRESH_TOKEN_1 no configurado")
             return None
+        if not client_id or not client_secret:
+            logger.warning("Calendar: GMAIL_CLIENT_ID o GMAIL_CLIENT_SECRET no configurado")
+            return None
+        logger.info(f"Calendar: usando client_id={client_id[:20]}... token={refresh_token[:20]}...")
         creds = Credentials(
             token=None,
             refresh_token=refresh_token,
             token_uri='https://oauth2.googleapis.com/token',
-            client_id=os.environ.get("GMAIL_CLIENT_ID", ""),
-            client_secret=os.environ.get("GMAIL_CLIENT_SECRET", ""),
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=[
                 'https://www.googleapis.com/auth/gmail.readonly',
                 'https://www.googleapis.com/auth/calendar',
@@ -1763,9 +1806,10 @@ def _get_calendar_service():
         )
         req = google.auth.transport.requests.Request()
         creds.refresh(req)
+        logger.info("Calendar: token refrescado OK")
         return googleapiclient.discovery.build('calendar', 'v3', credentials=creds, cache_discovery=False)
     except Exception as e:
-        logger.warning(f"Calendar service error: {e}")
+        logger.error(f"Calendar service error FULL: {type(e).__name__}: {e}")
         return None
 
 
@@ -2178,6 +2222,7 @@ def main():
     app.add_handler(CommandHandler("cancelar",     cmd_cancelar))
     app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
     app.add_handler(CommandHandler("agenda",       cmd_agenda))
+    app.add_handler(CommandHandler("cal_debug",    cmd_cal_debug))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
