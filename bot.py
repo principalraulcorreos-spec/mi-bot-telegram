@@ -2256,15 +2256,19 @@ def _fetch_forex_news_sync(target_date=None):
 def _format_forex_news(events, fecha_label="hoy"):
     if not events:
         return f"📰 Sin noticias de alto impacto {fecha_label}."
-    lines = [f"🔴 *NOTICIAS ALTO IMPACTO — {escape_md(fecha_label.upper())}*\n━━━━━━━━━━━━━━━\n"]
+    lines = [f"🔴 NOTICIAS ALTO IMPACTO — {fecha_label.upper()}\n{'─'*30}\n"]
     for e in events:
-        pais     = escape_md(e['country'])
-        titulo   = escape_md(e['title'])
-        hora     = escape_md(e['hora_mx'])
-        fc_txt   = f" \\| prev: {escape_md(e['previous'])}" if e.get('previous') else ""
-        fore_txt = f" \\| prev\\. est: {escape_md(e['forecast'])}" if e.get('forecast') else ""
-        lines.append(f"🕐 *{hora}* — {pais} — {titulo}{fc_txt}{fore_txt}")
-    lines.append("\n_Hora Ciudad de México_")
+        pais   = e['country']
+        titulo = e['title']
+        hora   = e['hora_mx']
+        extras = []
+        if e.get('forecast'):
+            extras.append(f"est: {e['forecast']}")
+        if e.get('previous'):
+            extras.append(f"prev: {e['previous']}")
+        extra_txt = f"  ({', '.join(extras)})" if extras else ""
+        lines.append(f"🕐 {hora} | {pais} — {titulo}{extra_txt}")
+    lines.append("\nHora: Ciudad de México")
     return "\n".join(lines)
 
 
@@ -2288,7 +2292,7 @@ async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timeout=20
         )
         texto = _format_forex_news(events, label)
-        await update.message.reply_text(texto, parse_mode='MarkdownV2')
+        await update.message.reply_text(texto)
     except asyncio.TimeoutError:
         await msg.edit_text("⏱ ForexFactory tardó demasiado. Intenta de nuevo.")
     except Exception as e:
@@ -2307,7 +2311,7 @@ async def job_forex_news(context: ContextTypes.DEFAULT_TYPE):
     try:
         events = await asyncio.to_thread(_fetch_forex_news_sync, target)
         msg    = _format_forex_news(events, label)
-        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='MarkdownV2')
+        await context.bot.send_message(chat_id=chat_id, text=msg)
     except Exception as e:
         logger.error(f"job_forex_news error: {e}")
 
