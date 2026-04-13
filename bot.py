@@ -1544,12 +1544,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif tipo == "ingreso":
+            registrar_ingreso(monto, "ingreso", comercio or tx.get("descripcion", ""))
+            pending.pop(short_id, None)
             d["gmail_pending"] = pending
             save_data(d)
             await query.message.edit_text(
-                f"💰 *{escape_md(f'${monto:,.2f}')}* — ¿De dónde vino?",
-                parse_mode='MarkdownV2',
-                reply_markup=gmail_ingreso_keyboard(short_id)
+                f"💰 *Ingreso registrado*\n_{escape_md(f'${monto:,.2f}')}_",
+                parse_mode='MarkdownV2'
             )
 
         elif tipo == "gasto":
