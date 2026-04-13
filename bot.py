@@ -245,8 +245,11 @@ def menu_keyboard():
             InlineKeyboardButton("🎯 ¿Cómo voy?",      callback_data='como_voy'),
         ],
         [
-            InlineKeyboardButton("📈 Trades",  callback_data='trades'),
-            InlineKeyboardButton("📝 Notas",   callback_data='notas'),
+            InlineKeyboardButton("📈 Trades",       callback_data='trades'),
+            InlineKeyboardButton("📸 Fotos Trades", callback_data='fotos_trades'),
+        ],
+        [
+            InlineKeyboardButton("📝 Notas", callback_data='notas'),
         ],
     ])
 
@@ -1433,6 +1436,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'trades':
         trades = load_data().get("trades", [])
         await query.message.reply_text(mostrar_trades(trades), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+    elif data == 'fotos_trades':
+        fotos = load_data().get("trade_fotos", [])
+        if not fotos:
+            await query.message.reply_text("No tienes fotos de trades guardadas aún.\nManda cualquier foto y se guarda automáticamente.")
+            return
+        # Mostrar teclado con fechas disponibles (últimos 7 días únicos)
+        fechas = sorted(set(f["fecha"][:10] for f in fotos), reverse=True)[:7]
+        botones = [[InlineKeyboardButton(f"📅 {fecha}", callback_data=f"fotos_fecha:{fecha}")] for fecha in fechas]
+        botones.append([InlineKeyboardButton("📸 Todas", callback_data="fotos_fecha:todas")])
+        botones.append([InlineKeyboardButton("⬅️ Menú", callback_data="menu")])
+        await query.message.reply_text(
+            f"📸 *{len(fotos)} foto(s) guardada(s)*\n¿De qué fecha?",
+            parse_mode='MarkdownV2',
+            reply_markup=InlineKeyboardMarkup(botones)
+        )
+
+    elif data.startswith('fotos_fecha:'):
+        filtro = data[len('fotos_fecha:'):]
+        fotos  = load_data().get("trade_fotos", [])
+        if filtro != "todas":
+            fotos = [f for f in fotos if f["fecha"].startswith(filtro)]
+        if not fotos:
+            await query.message.reply_text("No hay fotos para esa fecha.")
+            return
+        await query.message.reply_text(f"📸 {len(fotos)} foto(s):")
+        for foto in fotos[-10:]:
+            cap   = foto.get("caption", "")
+            fecha = foto.get("fecha", "")
+            texto = f"📅 {fecha}" + (f"\n{cap}" if cap else "")
+            try:
+                await query.message.reply_photo(photo=foto["file_id"], caption=texto)
+            except Exception as e:
+                logger.error(f"Error enviando foto trade: {e}")
 
     elif data == 'notas':
         notas = load_data().get("notas", [])
