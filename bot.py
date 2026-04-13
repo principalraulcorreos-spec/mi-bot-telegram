@@ -1377,9 +1377,9 @@ async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cal_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Diagnóstico del servicio de Google Calendar."""
     lines = []
-    client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
-    token1        = os.environ.get("GMAIL_REFRESH_TOKEN_1", "")
+    client_id     = os.environ.get("GMAIL_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
+    token1        = os.environ.get("GMAIL_REFRESH_TOKEN_1", "").strip().lstrip("=")
 
     lines.append(f"client_id: {'✅ ' + client_id[:20] + '...' if client_id else '❌ no configurado'}")
     lines.append(f"client_secret: {'✅ configurado' if client_secret else '❌ no configurado'}")
@@ -1783,9 +1783,9 @@ def _get_calendar_service():
         import google.auth.transport.requests
         import googleapiclient.discovery
 
-        client_id     = os.environ.get("GMAIL_CLIENT_ID", "")
-        client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "")
-        refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN_1", "")
+        client_id     = os.environ.get("GMAIL_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
+        refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN_1", "").strip().lstrip("=")
         if not refresh_token:
             logger.warning("Calendar: GMAIL_REFRESH_TOKEN_1 no configurado")
             return None
@@ -1932,6 +1932,7 @@ def _get_gmail_service(refresh_token: str):
         import google.auth.transport.requests
         import googleapiclient.discovery
 
+        refresh_token = refresh_token.strip().lstrip("=")
         creds = Credentials(
             token=None,
             refresh_token=refresh_token,
