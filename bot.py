@@ -1776,11 +1776,15 @@ async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: floa
         "2": os.environ.get("GMAIL_REFRESH_TOKEN_2", ""),
     }
     client_id = os.environ.get("GMAIL_CLIENT_ID", "")
+    logger.info(f"Gmail job: client_id={'SET' if client_id else 'MISSING'}, tokens={{'1': {'SET' if tokens['1'] else 'MISSING'}, '2': {'SET' if tokens['2'] else 'MISSING'}}}")
     if not client_id:
-        return  # Gmail no configurado — salir silenciosamente
+        logger.warning("Gmail job: GMAIL_CLIENT_ID no configurado, saltando")
+        return
 
     chat_id = get_chat_id()
+    logger.info(f"Gmail job: chat_id={chat_id}")
     if not chat_id:
+        logger.warning("Gmail job: chat_id no encontrado, saltando")
         return
 
     data = load_data()
