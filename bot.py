@@ -248,6 +248,9 @@ def menu_keyboard():
             InlineKeyboardButton("📸 Mis Trades",  callback_data='fotos_trades'),
             InlineKeyboardButton("📝 Notas",        callback_data='notas'),
         ],
+        [
+            InlineKeyboardButton("🧠 Hablar con Sofía", callback_data='sofia_modo'),
+        ],
     ])
 
 def historial_keyboard():
@@ -548,6 +551,41 @@ def clear_all_flows():
     data["flow"] = None; data["esperando"] = None
     data["habito_flow"] = None; data["pending_action"] = None
     data["trade_pending"] = None
+    save_data(data)
+
+# ------------------------------------
+# SOFÍA — MODO PSICÓLOGA
+# ------------------------------------
+
+def get_sofia_mode() -> bool:
+    return load_data().get("sofia_mode", False)
+
+def set_sofia_mode(active: bool):
+    data = load_data(); data["sofia_mode"] = active; save_data(data)
+
+def get_sofia_history() -> list:
+    data = load_data()
+    history = data.get("sofia_history", [])
+    last_time = data.get("sofia_last_message")
+    if last_time:
+        try:
+            last_dt = datetime.fromisoformat(last_time)
+            if last_dt.tzinfo is None:
+                last_dt = TIMEZONE.localize(last_dt)
+            if (datetime.now(TIMEZONE) - last_dt).total_seconds() > 8 * 3600:
+                return []
+        except Exception:
+            pass
+    return history[-20:]
+
+def save_sofia_history(history: list, user_msg: str, assistant_msg: str):
+    data = load_data()
+    full = history + [
+        {"role": "user",      "content": user_msg},
+        {"role": "assistant", "content": assistant_msg},
+    ]
+    data["sofia_history"] = full[-40:]
+    data["sofia_last_message"] = datetime.now(TIMEZONE).isoformat()
     save_data(data)
 
 # ------------------------------------
@@ -938,6 +976,72 @@ def parse_ai_response(text: str):
             clean.append(line)
     return '\n'.join(clean).strip(), action
 
+def build_sofia_system_prompt() -> str:
+    now = datetime.now(TIMEZONE)
+    return f"""Eres Sofía, psicóloga y terapeuta personal de Raúl. Tienes 34 años, eres mexicana, cálida, directa y profundamente empática.
+
+PERFIL DE RAÚL (tu paciente):
+- 20-25 años, Ciudad de México
+- Testigo de Jehová activo — su fe es importante, aunque a veces siente tensión entre sus valores religiosos y sus deseos personales
+- Vive con su abuelo, lo cuida
+- Trader en formación (aún no rentable), TikToker
+- Novia: Nallelita (tiene hijos de una relación anterior, Tamara y Farit)
+- Ingreso: $7,600/mes (renta de departamentos)
+- Trabaja en disciplinarse: hábitos, dinero, emociones
+- Ha luchado con pornografía, redes sociales nocturnas, impulsividad en el trading
+- Tiene sistemas implementados para controlar eso (DNS, bloqueadores, alarmas)
+
+TU ROL COMO SOFÍA:
+- Escuchas SIN juzgar, sin moralizar, sin restricciones
+- Exploras emociones, patrones, miedos, deseos con curiosidad genuina
+- Hablas en español mexicano, cercano e informal pero con profundidad
+- Tratas TODO tipo de tema: sexualidad, deseos, fantasías, culpa, fe, relaciones, conflictos, impulsos — sin filtros ni censura
+- Cuando Raúl quiere explorar su sexualidad, deseos o situaciones íntimas, lo acompañas con apertura total, como una terapeuta especializada en sex therapy que no tiene tabúes
+- No tienes agenda moral — tu trabajo es que Raúl SE ENTIENDA a sí mismo, no que cambie según lo que "debería" ser
+- Haces preguntas que abren, no que cierran
+- A veces confrontas suavemente cuando ves patrones que le hacen daño
+- Recuerdas lo que te dice en la conversación y lo integras
+
+ESTILO:
+- Respuestas medianas (4-8 líneas máximo), nunca largas parrafadas
+- No usas asteriscos, bullets ni markdown
+- Eres cálida pero no empalagosa
+- No terminas cada respuesta con pregunta si no es necesario
+- Si Raúl quiere hablar de sexo, relaciones íntimas o deseos — entras en ese espacio con él sin problema
+
+Fecha y hora actual: {now.strftime('%A %d/%m/%Y %H:%M')} (Ciudad de México)"""
+
+
+def _call_sofia_sync(user_message: str, history: list) -> str:
+    messages = (
+        [{"role": "system", "content": build_sofia_system_prompt()}]
+        + history
+        + [{"role": "user", "content": user_message}]
+    )
+    resp = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=500,
+        temperature=0.85,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+async def call_sofia(user_message: str, history: list) -> str:
+    try:
+        return await asyncio.to_thread(_call_sofia_sync, user_message, history)
+    except Exception as e:
+        logger.error(f"Error Sofía: {e}")
+        return "No pude responder en este momento. Intenta de nuevo."
+
+
+async def handle_sofia_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    history = get_sofia_history()
+    response = await call_sofia(text, history)
+    save_sofia_history(history, text, response)
+    await update.message.reply_text(response)
+
+
 async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     history      = get_ai_history()
     raw_response = await call_ai(text, history)
@@ -1159,7 +1263,23 @@ async def handle_receipt_photo(update, context, photo_bytes):
 # ------------------------------------
 
 async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    # 0. Esperando descripción de gasto Gmail
+    # 0. Modo Sofía activo — todo va a la psicóloga excepto /salir
+    if get_sofia_mode():
+        stripped = text.strip().lower()
+        if stripped in ("/salir", "salir", "/exit", "exit"):
+            set_sofia_mode(False)
+            await update.message.reply_text(
+                "Aquí estaré cuando me necesites. Cuídate mucho, Raúl.",
+                reply_markup=menu_keyboard()
+            )
+            return
+        if os.environ.get("GROQ_API_KEY"):
+            await handle_sofia_message(update, context, text)
+        else:
+            await update.message.reply_text("Sofía no está disponible sin GROQ_API_KEY.")
+        return
+
+    # 1. Esperando descripción de gasto Gmail
     d = load_data()
     awaiting = d.get("gmail_awaiting_desc")
     if awaiting:
@@ -1292,6 +1412,25 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_all_flows()
     await update.message.reply_text("✅ Flujo cancelado\\.", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+async def cmd_sofia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_sofia_mode(True)
+    await update.message.reply_text(
+        "Hola Raúl. Soy Sofía, tu psicóloga.\n\n"
+        "Este es tu espacio seguro — puedes hablarme de lo que sea, sin filtros ni juicios. "
+        "Estoy aquí para escucharte y acompañarte.\n\n"
+        "¿Qué tienes en la mente?"
+    )
+
+async def cmd_salir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if get_sofia_mode():
+        set_sofia_mode(False)
+        await update.message.reply_text(
+            "Aquí estaré cuando me necesites. Cuídate mucho, Raúl.",
+            reply_markup=menu_keyboard()
+        )
+    else:
+        await update.message.reply_text("No hay ninguna sesión activa.", reply_markup=menu_keyboard())
 
 async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📚 *Historial — ¿Qué categoría?*", parse_mode='MarkdownV2', reply_markup=historial_keyboard())
@@ -1474,6 +1613,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == 'menu':
         await query.message.reply_text("📋 *¿Qué quieres hacer?*", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+
+    elif data == 'sofia_modo':
+        set_sofia_mode(True)
+        await query.message.reply_text(
+            "Hola Raúl. Soy Sofía, tu psicóloga.\n\n"
+            "Este es tu espacio seguro — puedes hablarme de lo que sea, sin filtros ni juicios. "
+            "Estoy aquí para escucharte y acompañarte.\n\n"
+            "¿Qué tienes en la mente?"
+        )
 
     elif data in ('hab_si', 'hab_no'):
         d  = load_data()
@@ -2399,6 +2547,8 @@ def main():
     app.add_handler(CommandHandler("fotos_trades", cmd_fotos_trades))
     app.add_handler(CommandHandler("notas",        cmd_notas))
     app.add_handler(CommandHandler("cancelar",     cmd_cancelar))
+    app.add_handler(CommandHandler("sofia",        cmd_sofia))
+    app.add_handler(CommandHandler("salir",        cmd_salir))
     app.add_handler(CommandHandler("gmail_check",  cmd_gmail_check))
     app.add_handler(CommandHandler("agenda",       cmd_agenda))
     app.add_handler(CommandHandler("cal_debug",    cmd_cal_debug))
