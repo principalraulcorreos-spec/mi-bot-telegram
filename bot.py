@@ -1702,22 +1702,16 @@ def _fetch_gmail_transactions_sync(refresh_token: str, last_history_id: str | No
 
     import time as time_mod
     since = int(time_mod.time()) - window_hours * 3600
-    logger.info(f"Gmail search: últimas {window_hours}h (desde {since})")
-    query = (
-        f"after:{since} "
-        "("
-        "from:nu.com.mx OR from:nubank OR "
-        "from:binance OR from:bitget OR "
-        "subject:transferencia OR subject:depósito OR subject:deposito OR "
-        "subject:retiro OR subject:pago OR subject:cobro OR "
-        "from:cetes OR from:cetesdirecto OR "
-        "from:mercadopago OR from:mercadolibre OR "
-        "from:paypal"
-        ")"
-    )
+    # Convertir a formato fecha para Gmail (más compatible que Unix timestamp)
+    from datetime import datetime as _dt
+    since_date = _dt.utcfromtimestamp(since).strftime('%Y/%m/%d')
+    logger.info(f"Gmail search: últimas {window_hours}h (desde {since_date})")
+    # Buscar todos los emails recientes — la IA filtra cuáles son financieros
+    query = f"after:{since_date}"
     try:
-        result = service.users().messages().list(userId='me', q=query, maxResults=15).execute()
+        result = service.users().messages().list(userId='me', q=query, maxResults=20).execute()
         messages = result.get('messages', [])
+        logger.info(f"Gmail: {len(messages)} emails encontrados")
     except Exception as e:
         logger.error(f"Gmail list error: {e}")
         return []
