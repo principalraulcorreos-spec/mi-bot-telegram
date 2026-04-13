@@ -1026,7 +1026,7 @@ async def call_sofia(user_message: str, history: list) -> str:
         return await asyncio.to_thread(_call_sofia_sync, user_message, history)
     except Exception as e:
         logger.error(f"Error Sofía: {e}")
-        return "No pude responder en este momento. Intenta de nuevo."
+        return f"[DEBUG] Error: {type(e).__name__}: {str(e)[:300]}"
 
 
 async def handle_sofia_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
