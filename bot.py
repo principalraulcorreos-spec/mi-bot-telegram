@@ -245,11 +245,8 @@ def menu_keyboard():
             InlineKeyboardButton("🎯 ¿Cómo voy?",      callback_data='como_voy'),
         ],
         [
-            InlineKeyboardButton("📈 Trades",       callback_data='trades'),
-            InlineKeyboardButton("📸 Fotos Trades", callback_data='fotos_trades'),
-        ],
-        [
-            InlineKeyboardButton("📝 Notas", callback_data='notas'),
+            InlineKeyboardButton("📸 Mis Trades",  callback_data='fotos_trades'),
+            InlineKeyboardButton("📝 Notas",        callback_data='notas'),
         ],
     ])
 
@@ -1448,7 +1445,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         botones.append([InlineKeyboardButton("📸 Todas", callback_data="fotos_fecha:todas")])
         botones.append([InlineKeyboardButton("⬅️ Menú", callback_data="menu")])
         await query.message.reply_text(
-            f"📸 *{len(fotos)} foto(s) guardada(s)*\n¿De qué fecha?",
+            f"📸 *{len(fotos)} fotos guardadas*\n¿De qué fecha?",
             parse_mode='MarkdownV2',
             reply_markup=InlineKeyboardMarkup(botones)
         )
