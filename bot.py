@@ -336,7 +336,14 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_chat_id():
-    return load_data().get("chat_id")
+    # Primero intenta desde registro.json, luego variable de entorno CHAT_ID
+    chat_id = load_data().get("chat_id")
+    if not chat_id:
+        env_id = os.environ.get("CHAT_ID", "").strip()
+        if env_id:
+            chat_id = int(env_id)
+            set_chat_id(chat_id)  # guardarlo para siguientes llamadas
+    return chat_id
 
 def set_chat_id(chat_id):
     data = load_data(); data["chat_id"] = chat_id; save_data(data)
