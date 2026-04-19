@@ -458,6 +458,52 @@ def get_streak(clave):
 def get_streaks():
     return {clave: get_streak(clave) for clave, _ in HABITOS}
 
+def get_habitos_mes(año=None, mes=None):
+    now = datetime.now(TIMEZONE)
+    año = año or now.year
+    mes = mes or now.month
+    prefix = f"{año:04d}-{mes:02d}"
+    return [h for h in load_data().get("habitos", []) if h["fecha"].startswith(prefix)]
+
+def get_stats_habs(año=None, mes=None):
+    habitos = get_habitos_mes(año, mes)
+    stats = {clave: 0 for clave, _ in HABITOS}
+    for h in habitos:
+        for clave, _ in HABITOS:
+            if h["respuestas"].get(clave):
+                stats[clave] += 1
+    stats["total_dias"] = len(habitos)
+    return stats
+
+def get_ingresos_mes(año=None, mes=None):
+    now = datetime.now(TIMEZONE)
+    año = año or now.year
+    mes = mes or now.month
+    prefix = f"{año:04d}-{mes:02d}"
+    return [i for i in load_data().get("ingresos", []) if i["fecha"].startswith(prefix)]
+
+def get_movimientos_mes(año=None, mes=None):
+    now = datetime.now(TIMEZONE)
+    año = año or now.year
+    mes = mes or now.month
+    prefix = f"{año:04d}-{mes:02d}"
+    return [m for m in load_data().get("movimientos", []) if m["fecha"].startswith(prefix)]
+
+def set_razonar_pending(original_msg: str, contexto: str = ""):
+    data = load_data()
+    data["razonar_pending"] = {"mensaje": original_msg, "contexto": contexto}
+    data["esperando"] = "razonar"
+    save_data(data)
+
+def get_razonar_pending():
+    return load_data().get("razonar_pending")
+
+def clear_razonar_pending():
+    data = load_data()
+    data["razonar_pending"] = None
+    data["esperando"] = None
+    save_data(data)
+
 def set_habito_flow(paso, respuestas):
     data = load_data(); data["habito_flow"] = {"paso": paso, "respuestas": respuestas}; save_data(data)
 
@@ -571,27 +617,41 @@ def set_sofia_mode(active: bool):
     data = load_data(); data["sofia_mode"] = active; save_data(data)
 
 def get_sofia_history() -> list:
+    """Retorna los últimos 40 mensajes para la conversación activa. Sin expiración — memoria permanente."""
+    return load_data().get("sofia_history", [])[-40:]
+
+def get_sofia_context_summary() -> str:
+    """Resumen de toda la historia acumulada con Sofía para el system prompt."""
     data = load_data()
     history = data.get("sofia_history", [])
-    last_time = data.get("sofia_last_message")
-    if last_time:
-        try:
-            last_dt = datetime.fromisoformat(last_time)
-            if last_dt.tzinfo is None:
-                last_dt = TIMEZONE.localize(last_dt)
-            if (datetime.now(TIMEZONE) - last_dt).total_seconds() > 8 * 3600:
-                return []
-        except Exception:
-            pass
-    return history[-20:]
+    if not history:
+        return "Sin conversaciones previas con Sofía."
+    user_msgs = [m["content"] for m in history if m["role"] == "user"]
+    total = len(user_msgs)
+    if total == 0:
+        return "Sin conversaciones previas."
+    # Mostrar muestra representativa: primeros 5 + últimos 15
+    if total <= 20:
+        sample = user_msgs
+    else:
+        sample = user_msgs[:5] + ["..."] + user_msgs[-15:]
+    lines = [f"Total de intercambios guardados: {total} mensajes del usuario."]
+    lines.append("Muestra de temas platicados (para contexto histórico):")
+    for msg in sample:
+        if msg == "...":
+            lines.append("  [...sesiones anteriores...]")
+        else:
+            lines.append(f"  - {msg[:120]}")
+    return "\n".join(lines)
 
 def save_sofia_history(history: list, user_msg: str, assistant_msg: str):
     data = load_data()
-    full = history + [
+    # Acumulamos sobre el historial total guardado en data, no solo la sesión activa
+    full = data.get("sofia_history", []) + [
         {"role": "user",      "content": user_msg},
         {"role": "assistant", "content": assistant_msg},
     ]
-    data["sofia_history"] = full[-40:]
+    data["sofia_history"] = full[-300:]  # guardar hasta 300 mensajes (~150 intercambios)
     data["sofia_last_message"] = datetime.now(TIMEZONE).isoformat()
     save_data(data)
 
@@ -782,6 +842,279 @@ def generar_como_voy():
         f"*Total gastado: ${total_gastado:.0f} / ${sum(PRESUPUESTO.values())}*"
     )
 
+def generar_reporte_global_mensual(año=None, mes=None):
+    """Reporte completo del mes: finanzas + hábitos + fotos + coach."""
+    now = datetime.now(TIMEZONE)
+    año = año or now.year
+    mes = mes or now.month
+    # Si es día 1, reportamos el mes anterior
+    if now.day == 1 and año == now.year and mes == now.month:
+        if mes == 1:
+            año -= 1; mes = 12
+        else:
+            mes -= 1
+
+    import calendar
+    nombre_mes = calendar.month_name[mes]
+    mes_esc = escape_md(f"{nombre_mes} {año}")
+
+    # --- FINANZAS ---
+    gastos_mes    = get_gastos_mes(año, mes)
+    ingresos_mes  = get_ingresos_mes(año, mes)
+    movs_mes      = get_movimientos_mes(año, mes)
+
+    total_ingresos   = sum(i["cantidad"] for i in ingresos_mes)
+    total_gastos     = sum(g["cantidad"] for g in gastos_mes)
+    total_movs       = sum(m["cantidad"] for m in movs_mes)
+    balance          = total_ingresos - total_gastos
+
+    gastos_por_cat = {}
+    for g in gastos_mes:
+        cat = g.get("categoria") or "otros"
+        gastos_por_cat[cat] = gastos_por_cat.get(cat, 0) + g["cantidad"]
+
+    ingresos_por_tipo = {}
+    for i in ingresos_mes:
+        t = i.get("tipo") or "otro"
+        ingresos_por_tipo[t] = ingresos_por_tipo.get(t, 0) + i["cantidad"]
+
+    lineas_gastos = ""
+    for cat, total in sorted(gastos_por_cat.items(), key=lambda x: -x[1]):
+        presup = PRESUPUESTO.get(cat)
+        cat_e  = escape_md(cat.capitalize())
+        if presup:
+            pct = total / presup * 100
+            warn = " ⚠️" if total > presup else ""
+            lineas_gastos += f"  \\- {cat_e}: ${total:.0f}/{presup}{escape_md(warn)} \\({pct:.0f}%\\)\n"
+        else:
+            lineas_gastos += f"  \\- {cat_e}: ${total:.0f}\n"
+    if not lineas_gastos:
+        lineas_gastos = "  _Sin gastos registrados_\n"
+
+    lineas_ingresos = ""
+    for t, total in sorted(ingresos_por_tipo.items(), key=lambda x: -x[1]):
+        lineas_ingresos += f"  \\- {escape_md(t.capitalize())}: ${total:.0f}\n"
+    if not lineas_ingresos:
+        lineas_ingresos = "  _Sin ingresos registrados_\n"
+
+    balance_e = escape_md(f"${balance:+,.0f}")
+    balance_icon = "✅" if balance >= 0 else "🔴"
+
+    movs_line = f"  🔄 Transferencias entre cuentas: ${total_movs:.0f}\n" if total_movs > 0 else ""
+
+    # --- HÁBITOS ---
+    stats = get_stats_habs(año, mes)
+    total_dias = stats["total_dias"]
+    gym_dias      = stats.get("gym", 0)
+    comida_dias   = stats.get("comida_casa", 0)
+    trading_dias  = stats.get("trading_plan", 0)
+
+    meta_gym = 20  # meta mensual de gym
+    gym_pct  = gym_dias / meta_gym * 100 if meta_gym else 0
+    gym_icon = "✅" if gym_dias >= meta_gym * 0.8 else "⚠️" if gym_dias >= meta_gym * 0.5 else "🔴"
+
+    # Semanas en el mes (promedio semanal)
+    semanas = total_dias / 7 if total_dias >= 7 else 1
+    gym_sem = round(gym_dias / semanas, 1) if semanas else gym_dias
+
+    comida_pct = round(comida_dias / total_dias * 100) if total_dias else 0
+    comida_icon = "✅" if comida_pct >= 80 else "⚠️" if comida_pct >= 50 else "🔴"
+
+    # --- FOTOS / TRADES ---
+    data  = load_data()
+    prefix_fotos = f"{año:04d}-{mes:02d}"
+    fotos_mes = [f for f in data.get("trade_fotos", []) if f["fecha"].startswith(prefix_fotos)]
+
+    trades_mes = [t for t in data.get("trades", [])
+                  if t.get("fecha_entrada", "")[:7] == f"{año:04d}-{mes:02d}" and t.get("fecha_salida")]
+    trades_line = ""
+    if trades_mes:
+        wins    = sum(1 for t in trades_mes if (t.get("resultado_r") or 0) > 0)
+        rs      = [t["resultado_r"] for t in trades_mes if t.get("resultado_r") is not None]
+        total_r = sum(rs)
+        wrate   = round(wins / len(trades_mes) * 100)
+        r_icon  = "✅" if total_r > 0 else "🔴"
+        trades_line = (
+            f"\n📈 *Trades del mes*\n"
+            f"  \\- Operaciones: {len(trades_mes)} \\| Win rate: {wrate}% \\({wins}/{len(trades_mes)}\\)\n"
+            f"  \\- R acumulado: {r_icon} {escape_md(f'{total_r:+.2f}R')}\n"
+        )
+
+    # --- COACH OBSERVATIONS ---
+    obs = []
+    if gym_dias < 10 and total_dias >= 15:
+        obs.append(f"💪 Solo fuiste {gym_dias} días al gym este mes\\. Tu cuerpo necesita más constancia\\.")
+    if comida_pct < 60 and total_dias >= 15:
+        obs.append(f"🍽 Comiste en casa solo {comida_pct}% de los días\\. Estás gastando de más en comida de la calle\\.")
+    if total_gastos > total_ingresos and total_ingresos > 0:
+        obs.append(f"⚠️ Gastaste más de lo que ingresaste este mes\\. Revisión necesaria\\.")
+    gasto_cap = gastos_por_cat.get("capricho", 0)
+    if gasto_cap > PRESUPUESTO.get("capricho", 500):
+        obs.append(f"🎯 Caprichos/impulsos: ${gasto_cap:.0f} \\(sobre presupuesto\\)\\. ¿Qué disparó eso?")
+    if not obs:
+        obs.append("Todo va bien — sin alertas críticas este mes\\.")
+
+    obs_text = "\n".join(f"  {o}" for o in obs)
+
+    return (
+        f"📊 *RAÚL — REPORTE GLOBAL: {mes_esc}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 *FINANZAS*\n"
+        f"{lineas_ingresos}"
+        f"  _Total ingresos: ${total_ingresos:,.0f}_\n\n"
+        f"💸 *GASTOS*\n"
+        f"{lineas_gastos}"
+        f"  _Total gastos: ${total_gastos:,.0f}_\n"
+        f"{movs_line}"
+        f"  {balance_icon} *Balance: {balance_e}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💪 *HÁBITOS*\n"
+        f"  {gym_icon} Gym: {gym_dias} días \\({gym_sem} días/semana en promedio\\)\n"
+        f"  {comida_icon} Comida en casa: {comida_dias} días \\({comida_pct}%\\)\n"
+        f"  📈 Trading según plan: {trading_dias} días\n"
+        f"  📅 Check\\-ins registrados: {total_dias} días\n"
+        f"{trades_line}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📸 *ARCHIVO*\n"
+        f"  Fotos guardadas este mes: {len(fotos_mes)}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🧠 *OBSERVACIONES DEL COACH*\n"
+        f"{obs_text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"_Este es tu espejo del mes\\. ¿Qué ves?_"
+    )
+
+
+def _generar_reporte_sofia_mensual_sync(año=None, mes=None) -> str:
+    """Llama a Groq para generar el análisis emocional mensual de Sofía."""
+    data = load_data()
+    history = data.get("sofia_history", [])
+    if not history:
+        return None
+
+    now = datetime.now(TIMEZONE)
+    año = año or now.year
+    mes = mes or now.month
+    if now.day == 1 and año == now.year and mes == now.month:
+        if mes == 1: año -= 1; mes = 12
+        else: mes -= 1
+
+    import calendar
+    nombre_mes = calendar.month_name[mes]
+
+    # Filtrar mensajes del mes en cuestión si tienen fecha, o usar todos
+    user_msgs = [m["content"] for m in history if m["role"] == "user"]
+    if not user_msgs:
+        return None
+
+    resumen_conversaciones = "\n".join(f"- {m[:200]}" for m in user_msgs[-60:])
+
+    prompt = f"""Eres Sofía, la psicóloga de Raúl. Tienes acceso a lo que te platicó durante {nombre_mes} {año}.
+
+MENSAJES DEL USUARIO EN SESIONES PASADAS:
+{resumen_conversaciones}
+
+Genera un reporte mensual de progreso emocional. Incluye:
+1. EMOCIONES DOMINANTES: ¿qué emociones aparecieron más?
+2. PATRONES DETECTADOS: ¿qué comportamientos o pensamientos se repiten?
+3. LO QUE MEJORÓ: avances reales que notas
+4. LO QUE SIGUE PENDIENTE: áreas que necesitan trabajo
+5. RECOMENDACIÓN PARA EL MES QUE SIGUE: una cosa concreta a trabajar
+
+Tono: profesional, cálido, honesto. Máximo 20 líneas. Sin markdown. Habla directo a Raúl."""
+
+    resp = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=600,
+        temperature=0.7,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _generar_reporte_sofia_anual_sync(año=None) -> str:
+    """Genera el análisis emocional anual de Sofía."""
+    data = load_data()
+    history = data.get("sofia_history", [])
+    if not history:
+        return None
+    now = datetime.now(TIMEZONE)
+    año = año or (now.year - 1)
+    user_msgs = [m["content"] for m in history if m["role"] == "user"]
+    if not user_msgs:
+        return None
+    resumen = "\n".join(f"- {m[:150]}" for m in user_msgs[-100:])
+    prompt = f"""Eres Sofía, psicóloga de Raúl. Tienes el historial completo del año {año}.
+
+MUESTRA DE LO QUE PLATICÓ RAÚL ESTE AÑO:
+{resumen}
+
+Genera un REPORTE ANUAL EMOCIONAL. Incluye:
+1. CÓMO FUE EL AÑO: resumen de eventos emocionales clave
+2. CÓMO REACCIONÓ: patrones de respuesta ante la adversidad
+3. LO QUE MEJORÓ: crecimiento real
+4. LO QUE SIGUE ARRASTRANDO: heridas o patrones no resueltos
+5. SITUACIONES IMPORTANTES: momentos clave del año
+6. VISIÓN QUE TE FALTÓ: qué perspectiva le habría ayudado a crecer más
+7. REFLEXIÓN FINAL: algo que lo ayude a valorar lo que vivió
+
+Máximo 30 líneas. Sin markdown. Tono: honesto, profundo, esperanzador."""
+    resp = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=900,
+        temperature=0.7,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _generar_reporte_financiero_anual_sync(año=None) -> str:
+    """Genera el análisis financiero anual."""
+    now = datetime.now(TIMEZONE)
+    año = año or (now.year - 1)
+    data = load_data()
+
+    import calendar
+
+    resumen_meses = []
+    for mes in range(1, 13):
+        gastos   = get_gastos_mes(año, mes)
+        ingresos = get_ingresos_mes(año, mes)
+        movs     = get_movimientos_mes(año, mes)
+        if not gastos and not ingresos:
+            continue
+        tg = sum(g["cantidad"] for g in gastos)
+        ti = sum(i["cantidad"] for i in ingresos)
+        bal = ti - tg
+        nombre = calendar.month_abbr[mes]
+        resumen_meses.append(f"{nombre}: ingresos=${ti:.0f} gastos=${tg:.0f} balance=${bal:+.0f}")
+
+    if not resumen_meses:
+        return None
+
+    datos_str = "\n".join(resumen_meses)
+    prompt = f"""Analiza las finanzas de Raúl en {año}.
+
+DATOS POR MES:
+{datos_str}
+
+Genera un REPORTE FINANCIERO ANUAL. Incluye:
+1. RESUMEN GENERAL: total ingresos, gastos, balance del año
+2. DISTRIBUCIÓN DE CAPITAL: cómo se distribuyó el dinero
+3. MEJORES Y PEORES MESES: con análisis de qué pasó
+4. ERRORES Y ACIERTOS: decisiones financieras notables
+5. RECOMENDACIONES: 3 cosas concretas para mejorar el manejo del dinero el siguiente año
+
+Máximo 20 líneas. Sin markdown. Directo a Raúl, tono de coach financiero."""
+    resp = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=600,
+        temperature=0.5,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def mostrar_registros(registros, titulo):
     if not registros:
         return f"📚 *{escape_md(titulo)}*\n\n_Sin registros aún\\._"
@@ -870,7 +1203,41 @@ def build_system_prompt():
     open_trade = get_open_trade()
     open_str = f"  Tiene un trade abierto en {open_trade.get('par','?')} {open_trade.get('direccion','?')} desde {open_trade.get('fecha_entrada','?')[:10]}" if open_trade else "  ninguno"
 
-    return f"""Eres el asistente personal de Raúl, integrado en su bot de Telegram de vida organizada.
+    # Ingresos y movimientos del mes
+    stats_habs     = get_stats_habs()
+    ingresos_mes   = get_ingresos_mes()
+    movimientos_mes = get_movimientos_mes()
+    total_ingresos = sum(i["cantidad"] for i in ingresos_mes)
+    total_movs     = sum(m["cantidad"] for m in movimientos_mes)
+    total_gastos_mes = sum(gastos_por_cat.values())
+    balance_mes    = total_ingresos - total_gastos_mes
+
+    ingresos_str   = "\n".join([f"  {i['fecha'][:10]}: ${i['cantidad']:.0f} ({i.get('tipo','')})"
+                                 for i in ingresos_mes[-5:]]) or "  ninguno"
+    movs_str       = "\n".join([f"  {m['fecha'][:10]}: ${m['cantidad']:.0f} ({m.get('descripcion','')})"
+                                 for m in movimientos_mes[-5:]]) or "  ninguno"
+
+    # Alertas coach
+    coach_alerts = []
+    gym_dias   = stats_habs.get("gym", 0)
+    total_dias = stats_habs.get("total_dias", 0)
+    comida_dias = stats_habs.get("comida_casa", 0)
+    if total_dias >= 7:
+        gym_sem = gym_dias / (total_dias / 7)
+        if gym_sem < 3:
+            coach_alerts.append(f"ALERTA GYM: solo {gym_dias} días de gym este mes ({gym_sem:.1f}/semana). Meta: ≥3/semana.")
+        comida_pct = comida_dias / total_dias * 100
+        if comida_pct < 60:
+            coach_alerts.append(f"ALERTA COMIDA: solo {comida_pct:.0f}% comiendo en casa. Gasto innecesario.")
+    if total_gastos_mes > total_ingresos > 0:
+        coach_alerts.append(f"ALERTA FINANZAS: gastos (${total_gastos_mes:.0f}) > ingresos (${total_ingresos:.0f}) este mes.")
+    cap_gasto = gastos_por_cat.get("capricho", 0)
+    if cap_gasto > PRESUPUESTO.get("capricho", 500) * 1.2:
+        coach_alerts.append(f"ALERTA CAPRICHOS: ${cap_gasto:.0f} en caprichos (sobre presupuesto).")
+
+    coach_str = "\n".join(coach_alerts) if coach_alerts else "  Sin alertas activas."
+
+    return f"""Eres el asistente personal de Raúl — su coach de vida, entrenador y checador de plenitud integrado en Telegram.
 
 PERFIL DE RAÚL:
 - Trader activo, usa estrategia Mark Jeffrey
@@ -882,47 +1249,70 @@ PERFIL DE RAÚL:
 - Trabaja activamente en disciplinarse: hábitos, dinero y trading
 
 CONTEXTO ACTUAL ({now.strftime('%d/%m/%Y %H:%M')} Ciudad de México):
-- Semanas de retroalimentación completadas: {num_semanas}
-- Gastos este mes por categoría: {json.dumps(gastos_por_cat, ensure_ascii=False) if gastos_por_cat else 'ninguno'}
-- Últimos gastos individuales:
+- Semanas de retroalimentación: {num_semanas}
+
+FINANZAS DEL MES:
+- Gastos por categoría: {json.dumps(gastos_por_cat, ensure_ascii=False) if gastos_por_cat else 'ninguno'}
+- Total gastos: ${total_gastos_mes:.0f} | Ingresos: ${total_ingresos:.0f} | Balance: ${balance_mes:+.0f}
+- Últimos ingresos:
+{ingresos_str}
+- Movimientos entre cuentas:
+{movs_str}
+- Últimos gastos:
 {gastos_str}
-- Hábitos últimos 7 días:
-  gym: {habitos_resumen.get('gym','sin datos')}
-  comida en casa: {habitos_resumen.get('comida_casa','sin datos')}
-  trading según plan: {habitos_resumen.get('trading_plan','sin datos')}
-- Trade abierto: {open_str}
-- Trades recientes:
+
+HÁBITOS ESTE MES (días registrados: {total_dias}):
+  gym: {gym_dias} días | {habitos_resumen.get('gym','sin datos')} (últimos 7 días)
+  comida en casa: {comida_dias} días | {habitos_resumen.get('comida_casa','sin datos')} (últimos 7 días)
+  trading según plan: {stats_habs.get('trading_plan',0)} días | {habitos_resumen.get('trading_plan','sin datos')} (últimos 7 días)
+
+TRADES:
+- Abierto: {open_str}
+- Recientes:
 {trades_str}
-- Notas guardadas:
+
+NOTAS:
 {notas_str}
-- Agenda próximas 48h:
+
+AGENDA 48H:
 {get_calendar_context()}
 
-INSTRUCCIONES:
-- Habla de tú a Raúl, en español mexicano, informal pero directo y con carácter
-- Eres SU asistente personal — conoces su vida, sus metas, sus puntos débiles
-- Respuestas cortas (máximo 3-4 líneas). Sin markdown (sin asteriscos, guiones bajos, etc.)
-- Usa los datos reales del contexto para responder preguntas específicas
-- Si pregunta sobre su agenda, usa los datos de calendario del contexto
-- Conéctate con lo que sabes de él: trading, fe, abuelo, Nallelita, disciplina
-- NUNCA corrijas ni cuestiones lo que Raúl dice de su propia vida, familia o situación personal. Él sabe mejor que tú. Si menciona a su padre, primo, amigo u otra persona, acéptalo y ayúdalo sin comentarios.
+ALERTAS DEL COACH:
+{coach_str}
 
-DETECCIÓN DE ACCIONES — incluye al final de tu respuesta (línea separada) si aplica:
+INSTRUCCIONES COMO COACH:
+- Habla de tú, español mexicano, informal pero directo con carácter
+- Eres SU asistente — conoces su vida, sus metas, sus puntos débiles
+- Respuestas cortas (3-4 líneas). Sin markdown.
+- Si detectas que un área está decayendo, señálalo proactivamente aunque no te pregunte
+- Conecta lo que dice con su contexto (trading, fe, abuelo, Nallelita, disciplina)
+- NUNCA cuestiones lo que Raúl dice de su vida personal. Acéptalo y ayúdalo.
+- Antes de registrar algo importante, puedes hacer UNA pregunta inteligente para clarificar
 
-Si detectas un gasto claro con monto:
+DETECCIÓN DE ACCIONES — incluye al final (línea separada) si aplica:
+
+Si detectas un GASTO con monto:
 ACCION_GASTO:[monto]:[categoria]
 Categorías: comida, transporte, capricho, salud, otros
 
-Si quiere guardar una nota/recordatorio:
+Si detectas un INGRESO con monto:
+ACCION_INGRESO:[monto]:[tipo]
+Tipos: renta, transferencia, rendimientos, otro
+
+Si detectas MOVIMIENTO entre cuentas:
+ACCION_MOVIMIENTO:[monto]:[descripcion]
+
+Si quiere guardar una nota:
 ACCION_NOTA:[texto]
 
-Si quiere VER su agenda (hoy, mañana, semana, etc):
+Si quiere VER agenda:
 ACCION_CAL_VER:[dias]
-Ejemplo: ACCION_CAL_VER:1 (hoy), ACCION_CAL_VER:2 (mañana), ACCION_CAL_VER:7 (semana)
 
-Si quiere CREAR un evento en el calendario:
+Si quiere CREAR evento:
 ACCION_CAL_CREAR:[titulo]|[YYYY-MM-DD]|[HH:MM]|[duracion_minutos]
-Ejemplo: ACCION_CAL_CREAR:Dentista|2026-04-15|15:00|60
+
+Si necesitas UNA pregunta de clarificación ANTES de registrar algo (solo para info importante/ambigua):
+ACCION_RAZONAR:[pregunta concreta y específica]
 
 Solo incluye UNA acción por respuesta y solo si estás muy seguro."""
 
@@ -959,6 +1349,20 @@ def parse_ai_response(text: str):
                     action = {"type": "gasto", "amount": float(parts[1].strip()), "category": parts[2].strip().lower()}
                 except Exception:
                     clean.append(line)
+        elif line.startswith('ACCION_INGRESO:'):
+            parts = line.split(':')
+            if len(parts) >= 3:
+                try:
+                    action = {"type": "ingreso", "amount": float(parts[1].strip()), "tipo": parts[2].strip().lower()}
+                except Exception:
+                    clean.append(line)
+        elif line.startswith('ACCION_MOVIMIENTO:'):
+            parts = line.split(':', 2)
+            if len(parts) >= 3:
+                try:
+                    action = {"type": "movimiento", "amount": float(parts[1].strip()), "descripcion": parts[2].strip()}
+                except Exception:
+                    clean.append(line)
         elif line.startswith('ACCION_NOTA:'):
             texto = line[len('ACCION_NOTA:'):].strip()
             if texto:
@@ -979,6 +1383,10 @@ def parse_ai_response(text: str):
                     "hora":     partes[2].strip(),
                     "duracion": int(partes[3].strip()) if len(partes) > 3 else 60,
                 }
+        elif line.startswith('ACCION_RAZONAR:'):
+            pregunta = line[len('ACCION_RAZONAR:'):].strip()
+            if pregunta:
+                action = {"type": "razonar", "pregunta": pregunta}
         else:
             clean.append(line)
     return '\n'.join(clean).strip(), action
@@ -1008,7 +1416,11 @@ ESTILO DE RESPUESTA:
 - 3-6 líneas por respuesta, nunca discursos largos
 - Sin asteriscos, guiones ni markdown
 - Preguntas solo cuando genuinamente abren algo, no como fórmula
-- Integras lo que Raúl va compartiendo a lo largo de la sesión
+- Integras lo que Raúl ha compartido en sesiones PASADAS y presentes — tienes memoria continua
+- Si detectas patrones que se repiten de sesiones anteriores, nómbralos con cuidado
+
+HISTORIAL ACUMULADO DE SESIONES PASADAS:
+{get_sofia_context_summary()}
 
 Fecha: {now.strftime('%A %d/%m/%Y %H:%M')} (Ciudad de México)"""
 
@@ -1055,6 +1467,30 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             f"{message_text}\n\n💸 ¿Registro ${action['amount']:.0f} en {action['category'].capitalize()}?",
             reply_markup=confirm_keyboard()
         )
+    elif action and action["type"] == "ingreso":
+        set_pending_action(action)
+        tipo_esc = escape_md(action['tipo'].capitalize())
+        monto_esc = escape_md(f"${action['amount']:,.0f}")
+        await update.message.reply_text(
+            f"{message_text}\n\n💰 ¿Registro *{monto_esc}* como ingreso \\({tipo_esc}\\)?",
+            parse_mode='MarkdownV2',
+            reply_markup=confirm_keyboard()
+        )
+    elif action and action["type"] == "movimiento":
+        set_pending_action(action)
+        monto_esc = escape_md(f"${action['amount']:,.0f}")
+        desc_esc  = escape_md(action['descripcion'])
+        await update.message.reply_text(
+            f"{message_text}\n\n🔄 ¿Registro *{monto_esc}* como movimiento entre cuentas?\n_{desc_esc}_",
+            parse_mode='MarkdownV2',
+            reply_markup=confirm_keyboard()
+        )
+    elif action and action["type"] == "razonar":
+        # Guardar el mensaje original y preguntar para clarificar
+        set_razonar_pending(text, action["pregunta"])
+        pregunta_esc = escape_md(action["pregunta"])
+        resp_text = f"{message_text}\n\n🤔 _{pregunta_esc}_" if message_text else f"🤔 _{pregunta_esc}_"
+        await update.message.reply_text(resp_text, parse_mode='MarkdownV2')
     elif action and action["type"] == "nota":
         guardar_nota(action["texto"])
         await update.message.reply_text(
@@ -1278,6 +1714,46 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             await handle_sofia_message(update, context, text)
         else:
             await update.message.reply_text("Sofía no está disponible sin GROQ_API_KEY.")
+        return
+
+    # 0.5. Estado razonar: el bot hizo una pregunta de clarificación, esperamos respuesta
+    if get_esperando() == "razonar":
+        pending = get_razonar_pending()
+        clear_razonar_pending()
+        if pending and os.environ.get("GROQ_API_KEY"):
+            # Llamar a la IA con el mensaje original + la respuesta de clarificación
+            mensaje_combinado = (
+                f"[Contexto previo] {pending['mensaje']}\n"
+                f"[Mi respuesta a tu pregunta] {text}"
+            )
+            history = get_ai_history()
+            raw_response = await call_ai(mensaje_combinado, history)
+            message_text, action = parse_ai_response(raw_response)
+            save_ai_history(history, mensaje_combinado, raw_response)
+            # Re-usar el flujo normal pero sin recursión
+            if action and action["type"] == "gasto":
+                set_pending_action(action)
+                await update.message.reply_text(
+                    f"{message_text}\n\n💸 ¿Registro ${action['amount']:.0f} en {action['category'].capitalize()}?",
+                    reply_markup=confirm_keyboard()
+                )
+            elif action and action["type"] == "ingreso":
+                set_pending_action(action)
+                await update.message.reply_text(
+                    f"{message_text}\n\n💰 ¿Registro ${action['amount']:,.0f} como ingreso ({action['tipo'].capitalize()})?",
+                    reply_markup=confirm_keyboard()
+                )
+            elif action and action["type"] == "movimiento":
+                set_pending_action(action)
+                await update.message.reply_text(
+                    f"{message_text}\n\n🔄 ¿Registro ${action['amount']:,.0f} como movimiento entre cuentas?",
+                    reply_markup=confirm_keyboard()
+                )
+            elif action and action["type"] == "nota":
+                guardar_nota(action["texto"])
+                await update.message.reply_text(f"{message_text}\n\n📝 Nota guardada.")
+            else:
+                await update.message.reply_text(message_text)
         return
 
     # 1. Esperando descripción de gasto Gmail
@@ -1529,6 +2005,42 @@ async def cmd_cal_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(lines))
 
+async def cmd_reporte_mes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra el reporte global del mes actual (o del mes anterior si es día 1)."""
+    await update.message.reply_text("⏳ _Generando reporte\\.\\.\\._", parse_mode='MarkdownV2')
+    try:
+        reporte = generar_reporte_global_mensual()
+        await update.message.reply_text(reporte, parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+    except Exception as e:
+        logger.error(f"cmd_reporte_mes error: {e}")
+        await update.message.reply_text(f"Error generando reporte: {e}")
+
+async def cmd_reporte_anual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Genera el reporte anual emocional + financiero manualmente."""
+    if not os.environ.get("GROQ_API_KEY"):
+        await update.message.reply_text("GROQ_API_KEY no configurado.")
+        return
+    await update.message.reply_text("⏳ _Generando reporte anual\\.\\.\\. puede tomar unos segundos\\._", parse_mode='MarkdownV2')
+    try:
+        año = datetime.now(TIMEZONE).year - 1
+        rep_emo = await asyncio.to_thread(_generar_reporte_sofia_anual_sync, año)
+        rep_fin = await asyncio.to_thread(_generar_reporte_financiero_anual_sync, año)
+        if rep_emo:
+            await update.message.reply_text(
+                f"🌅 *REPORTE ANUAL EMOCIONAL {año}*\n━━━━━━━━━━━━━━━\n\n{escape_md(rep_emo)}",
+                parse_mode='MarkdownV2'
+            )
+        if rep_fin:
+            await update.message.reply_text(
+                f"💰 *REPORTE FINANCIERO ANUAL {año}*\n━━━━━━━━━━━━━━━\n\n{escape_md(rep_fin)}",
+                parse_mode='MarkdownV2'
+            )
+        if not rep_emo and not rep_fin:
+            await update.message.reply_text("No hay suficientes datos para el reporte anual aún.")
+    except Exception as e:
+        logger.error(f"cmd_reporte_anual error: {e}")
+        await update.message.reply_text(f"Error: {e}")
+
 async def cmd_gmail_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.environ.get("GMAIL_CLIENT_ID"):
         await update.message.reply_text("Gmail no está configurado\\.", parse_mode='MarkdownV2')
@@ -1675,6 +2187,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             alert = check_budget_alert(cat)
             if alert:
                 await query.message.reply_text(alert, parse_mode='MarkdownV2')
+        elif action["type"] == "ingreso":
+            registrar_ingreso(action["amount"], action.get("tipo", "otro"))
+            monto_esc = escape_md(f"${action['amount']:,.0f}")
+            tipo_esc  = escape_md(action.get("tipo", "otro").capitalize())
+            await query.message.reply_text(
+                f"✅ *{monto_esc} registrado como ingreso*\n_{tipo_esc}_",
+                parse_mode='MarkdownV2'
+            )
+        elif action["type"] == "movimiento":
+            registrar_movimiento(action["amount"], action.get("descripcion", "movimiento"))
+            monto_esc = escape_md(f"${action['amount']:,.0f}")
+            desc_esc  = escape_md(action.get("descripcion", "movimiento"))
+            await query.message.reply_text(
+                f"✅ *{monto_esc} movimiento entre cuentas registrado*\n_{desc_esc}_",
+                parse_mode='MarkdownV2'
+            )
 
     elif data == 'accion_no':
         clear_pending_action()
@@ -1932,6 +2460,94 @@ async def job_habitos(context: ContextTypes.DEFAULT_TYPE):
         f"🌙 *RAÚL — CHECK\\-IN DIARIO*\n━━━━━━━━━━━━━━━\n\n*{escape_md(primera)}*",
         parse_mode='MarkdownV2', reply_markup=habito_keyboard()
     )
+
+async def job_reporte_mensual(context: ContextTypes.DEFAULT_TYPE):
+    """Día 1 de cada mes a las 9am: reporte global del mes anterior."""
+    if dia_hoy() != 1:
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    try:
+        reporte = generar_reporte_global_mensual()
+        await context.bot.send_message(chat_id, reporte, parse_mode='MarkdownV2')
+    except Exception as e:
+        logger.error(f"job_reporte_mensual error: {e}")
+
+async def job_reporte_sofia_mensual(context: ContextTypes.DEFAULT_TYPE):
+    """Día 1 de cada mes a las 9pm: análisis emocional de Sofía del mes anterior."""
+    if dia_hoy() != 1:
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    if not os.environ.get("GROQ_API_KEY"):
+        return
+    try:
+        reporte = await asyncio.to_thread(_generar_reporte_sofia_mensual_sync)
+        if not reporte:
+            return
+        intro = (
+            "🧠 *RAÚL — REPORTE EMOCIONAL MENSUAL \\(Sofía\\)*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        await context.bot.send_message(
+            chat_id,
+            intro + escape_md(reporte),
+            parse_mode='MarkdownV2'
+        )
+    except Exception as e:
+        logger.error(f"job_reporte_sofia_mensual error: {e}")
+
+async def job_reflexion_mensual_dia1(context: ContextTypes.DEFAULT_TYPE):
+    """Día 1 de cada mes a las 9:30pm: inicia el flujo de reflexión mensual."""
+    if dia_hoy() != 1:
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    set_flow('mensual', 0, [])
+    await enviar_pregunta(context.bot, chat_id, 'mensual', 0)
+
+async def job_reporte_anual(context: ContextTypes.DEFAULT_TYPE):
+    """1 de enero: reporte anual emocional + financiero."""
+    now = datetime.now(TIMEZONE)
+    if now.month != 1 or now.day != 1:
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    año_anterior = now.year - 1
+    if not os.environ.get("GROQ_API_KEY"):
+        return
+    try:
+        # Reporte emocional anual
+        rep_emocional = await asyncio.to_thread(_generar_reporte_sofia_anual_sync, año_anterior)
+        if rep_emocional:
+            intro = (
+                f"🌅 *RAÚL — REPORTE ANUAL EMOCIONAL {año_anterior} \\(Sofía\\)*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            )
+            await context.bot.send_message(
+                chat_id,
+                intro + escape_md(rep_emocional),
+                parse_mode='MarkdownV2'
+            )
+
+        # Reporte financiero anual
+        rep_financiero = await asyncio.to_thread(_generar_reporte_financiero_anual_sync, año_anterior)
+        if rep_financiero:
+            intro2 = (
+                f"💰 *RAÚL — REPORTE FINANCIERO ANUAL {año_anterior}*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            )
+            await context.bot.send_message(
+                chat_id,
+                intro2 + escape_md(rep_financiero),
+                parse_mode='MarkdownV2'
+            )
+    except Exception as e:
+        logger.error(f"job_reporte_anual error: {e}")
 
 # ------------------------------------
 # GOOGLE CALENDAR
@@ -2608,6 +3224,8 @@ def main():
     app.add_handler(CommandHandler("agenda",       cmd_agenda))
     app.add_handler(CommandHandler("cal_debug",    cmd_cal_debug))
     app.add_handler(CommandHandler("noticias",     cmd_noticias))
+    app.add_handler(CommandHandler("reporte_mes",  cmd_reporte_mes))
+    app.add_handler(CommandHandler("reporte_anual", cmd_reporte_anual))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -2616,13 +3234,20 @@ def main():
 
     jq = app.job_queue
     mx = TIMEZONE
-    jq.run_daily(job_semanal,        time=dt_time(21, 10, tzinfo=mx), days=(3,), name="semanal")
-    jq.run_daily(job_mensual,        time=dt_time(8,  0,  tzinfo=mx), days=(4,), name="mensual")
+    # Retroalimentación semanal — jueves 9:30pm (actualizado de 9:10pm)
+    jq.run_daily(job_semanal,        time=dt_time(21, 30, tzinfo=mx), days=(3,), name="semanal")
+    # job_mensual removido — reemplazado por job_reflexion_mensual_dia1
     jq.run_daily(job_capital,        time=dt_time(8,  0,  tzinfo=mx),            name="capital")
     jq.run_daily(job_enviar_informe, time=dt_time(8,  0,  tzinfo=mx),            name="enviar_informe")
     jq.run_daily(job_pedir_informe,  time=dt_time(20, 30, tzinfo=mx),            name="pedir_informe")
     jq.run_daily(job_habitos,        time=dt_time(21, 0,  tzinfo=mx),            name="habitos")
     jq.run_daily(job_forex_news,     time=dt_time(6,  0,  tzinfo=mx),            name="forex_news")
+    # Día 1 de cada mes:
+    jq.run_daily(job_reporte_mensual,         time=dt_time(9,  0,  tzinfo=mx), name="reporte_mensual")
+    jq.run_daily(job_reporte_sofia_mensual,   time=dt_time(21, 0,  tzinfo=mx), name="sofia_mensual")
+    jq.run_daily(job_reflexion_mensual_dia1,  time=dt_time(21, 30, tzinfo=mx), name="reflexion_mensual")
+    # 1 de enero: reporte anual
+    jq.run_daily(job_reporte_anual,           time=dt_time(10, 0,  tzinfo=mx), name="reporte_anual")
     # Gmail: revisar cada 30 minutos si las credenciales están configuradas
     if os.environ.get("GMAIL_CLIENT_ID"):
         jq.run_repeating(job_gmail_check, interval=60, first=30, name="gmail")
