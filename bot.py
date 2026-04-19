@@ -969,7 +969,7 @@ def generar_reporte_global_mensual(año=None, mes=None):
         f"  {balance_icon} *Balance: {balance_e}*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💪 *HÁBITOS*\n"
-        f"  {gym_icon} Gym: {gym_dias} días \\({gym_sem} días/semana en promedio\\)\n"
+        f"  {gym_icon} Gym: {gym_dias} días \\({escape_md(str(gym_sem))} días/semana en promedio\\)\n"
         f"  {comida_icon} Comida en casa: {comida_dias} días \\({comida_pct}%\\)\n"
         f"  📈 Trading según plan: {trading_dias} días\n"
         f"  📅 Check\\-ins registrados: {total_dias} días\n"
