@@ -3097,14 +3097,13 @@ def _fetch_forex_news_sync(target_date=None, days=1):
             logger.info(f"FXStreet primer evento completo: {raw_events[0]}")
 
         for ev in raw_events:
-            event_obj = ev.get("Event", ev)  # estructura anidada o plana
-            currency = (event_obj.get("CurrencyCode") or event_obj.get("currencyCode") or
-                        ev.get("CurrencyCode") or ev.get("currencyCode") or "").upper()
+            event_obj = ev.get("Event", {})
+            # CurrencyId contiene el código ISO (ej: "USD")
+            currency = (event_obj.get("CurrencyId") or "").upper()
             if currency not in _FOREX_CURRENCIES:
                 continue
 
-            date_str = (ev.get("DateUtc") or ev.get("dateUtc") or
-                        ev.get("Date") or ev.get("date") or "")
+            date_str = ev.get("DateUtc", "")
             try:
                 dt_utc = datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc)
             except Exception:
@@ -3114,17 +3113,18 @@ def _fetch_forex_news_sync(target_date=None, days=1):
             if not (target_date <= dt_mx.date() < end_date):
                 continue
 
-            title = (event_obj.get("Name") or event_obj.get("name") or
-                     ev.get("Name") or ev.get("name") or ev.get("title") or "").strip()
+            title    = event_obj.get("Name", "").strip()
             hora_mx  = dt_mx.strftime("%a %d/%m %H:%M") if days > 1 else dt_mx.strftime("%H:%M")
             sort_key = dt_mx.toordinal() * 1440 + dt_mx.hour * 60 + dt_mx.minute
+            forecast = ev.get("Consensus")
+            previous = ev.get("Previous")
 
             all_events.append({
                 "title":    title,
                 "country":  currency,
                 "hora_mx":  hora_mx,
-                "forecast": str(ev.get("Consensus") or ev.get("consensus") or ev.get("forecast") or ""),
-                "previous": str(ev.get("Previous") or ev.get("previous") or ""),
+                "forecast": str(forecast) if forecast is not None else "",
+                "previous": str(previous) if previous is not None else "",
                 "sort_key": sort_key,
             })
 
