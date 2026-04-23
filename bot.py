@@ -3037,28 +3037,22 @@ def gmail_cambiar_keyboard(short_id: str) -> InlineKeyboardMarkup:
 _FOREX_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF"}
 
 def _fetch_forex_news_sync(target_date=None, days=1):
-    """Descarga eventos de alto impacto vía TradingView Economic Calendar API."""
+    """Descarga eventos de alto impacto vía Myfxbook Economic Calendar API."""
     import requests as req_lib
 
     mx_tz = TIMEZONE
     if target_date is None:
         target_date = datetime.now(mx_tz).date()
 
-    # Rango: medianoche a medianoche UTC del día objetivo
-    from_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=pytz.utc)
-    to_dt   = from_dt + timedelta(days=days)
-
-    url = "https://economic-calendar.tradingview.com/events"
-    # importance[]=1 = High (3 barras) en la API de TradingView
-    params = [
-        ("from", from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-        ("to",   to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-        ("importance[]", 1),
-    ]
+    end_date = target_date + timedelta(days=days)
+    url = "https://www.myfxbook.com/forex-economic-calendar-impl.json"
+    params = {
+        "start": target_date.strftime("%Y-%m-%d"),
+        "end":   end_date.strftime("%Y-%m-%d"),
+    }
     headers = {
-        "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin":      "https://www.tradingview.com",
-        "Referer":     "https://www.tradingview.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer":    "https://www.myfxbook.com/",
     }
 
     fetch_ok = False
@@ -3069,63 +3063,34 @@ def _fetch_forex_news_sync(target_date=None, days=1):
         data = resp.json()
         fetch_ok = True
 
-        raw_events = data.get("result", [])
-        logger.info(f"TradingView calendar: {len(raw_events)} eventos totales")
-
-        # Whitelist: solo eventos que mueven mercados forex (equivalente a 3 barras TradingView)
-        _HIGH_KW = (
-            "cpi", "consumer price index", "inflation rate", "core inflation",
-            "ppi", "producer price",
-            "pce", "personal consumption expenditure",
-            "gdp", "gross domestic product",
-            "nonfarm payroll", "non-farm payroll", "nfp",
-            "employment change", "unemployment rate",
-            "jobless claims", "claimant count",
-            "pmi",
-            "ism manufacturing", "ism non-manufacturing", "ism services",
-            "interest rate decision", "rate decision", "monetary policy decision",
-            "monetary policy statement", "rate statement",
-            "cash rate", "fed funds", "fomc",
-            "bank rate", "deposit rate", "repo rate",
-            "press conference",
-            "retail sales",
-            "durable goods",
-            "trade balance",
-            "housing starts", "building permits",
-            "testimony",
-            "flash gdp",
-            "average earnings", "wage",
-        )
+        raw_events = data.get("calendar", [])
+        logger.info(f"Myfxbook calendar: {len(raw_events)} eventos totales")
 
         for ev in raw_events:
-            imp = ev.get("importance")
-            if imp == -1:  # feriados y eventos sin datos
-                continue
-            title_lc = ev.get("title", "").lower()
-            if not any(kw in title_lc for kw in _HIGH_KW):
+            # impact: 3=High, 2=Medium, 1=Low
+            if ev.get("impact", 0) < 3:
                 continue
             currency = ev.get("currency", "").upper()
             if currency not in _FOREX_CURRENCIES:
                 continue
 
-            # Fecha/hora en UTC → convertir a México
+            # Fecha y hora en timezone del evento (Myfxbook devuelve en UTC)
             date_str = ev.get("date", "")
+            time_str = ev.get("time", "")
             try:
-                dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=pytz.utc)
-            except ValueError:
-                try:
-                    dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                except Exception:
-                    continue
+                if time_str and time_str != "Tentative" and time_str != "All Day":
+                    dt_utc = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+                else:
+                    dt_utc = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=pytz.utc)
+            except Exception:
+                continue
             dt_mx = dt_utc.astimezone(mx_tz)
 
-            # Verificar que cae en el rango de fechas (hora México)
-            end_date = target_date + timedelta(days=days)
             if not (target_date <= dt_mx.date() < end_date):
                 continue
 
-            hora_mx  = dt_mx.strftime("%A %d/%m %H:%M") if days > 1 else dt_mx.strftime("%H:%M")
-            sort_key = (dt_mx - datetime.combine(target_date, datetime.min.time()).replace(tzinfo=mx_tz)).seconds // 60 + dt_mx.toordinal() * 1440
+            hora_mx  = dt_mx.strftime("%a %d/%m %H:%M") if days > 1 else dt_mx.strftime("%H:%M")
+            sort_key = dt_mx.toordinal() * 1440 + dt_mx.hour * 60 + dt_mx.minute
 
             all_events.append({
                 "title":    ev.get("title", "").strip(),
@@ -3137,7 +3102,7 @@ def _fetch_forex_news_sync(target_date=None, days=1):
             })
 
     except Exception as e:
-        logger.warning(f"TradingView calendar fetch error: {e}")
+        logger.warning(f"Myfxbook calendar fetch error: {e}")
 
     all_events.sort(key=lambda x: x['sort_key'])
     return all_events, fetch_ok
