@@ -1871,6 +1871,29 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             await msg.edit_text("❌ No pude obtener el calendario. Usa /noticias")
         return
 
+    # 3.6. Detección natural de peso: "peso 78", "hoy pesé 78.5", "me pese 80"
+    import re as _re
+    _peso_match = _re.search(r'pes[oéeé]\s+(\d+(?:[.,]\d+)?)', _tl)
+    if not _peso_match:
+        _peso_match = _re.search(r'(\d+(?:[.,]\d+)?)\s*kg', _tl)
+    if _peso_match:
+        try:
+            valor = float(_peso_match.group(1).replace(',', '.'))
+            if 30 < valor < 250:  # rango razonable de peso humano
+                d = load_data()
+                if "peso" not in d:
+                    d["peso"] = []
+                fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+                d["peso"] = [p for p in d["peso"] if p["fecha"] != fecha]
+                d["peso"].append({"fecha": fecha, "valor": valor})
+                d["peso"].sort(key=lambda x: x["fecha"])
+                save_data(d)
+                texto = _formato_peso(d["peso"])
+                await update.message.reply_text(texto, parse_mode='MarkdownV2')
+                return
+        except (ValueError, AttributeError):
+            pass
+
     # 4. IA — catch-all
     if os.environ.get("GROQ_API_KEY"):
         await handle_ai_message(update, context, text)
