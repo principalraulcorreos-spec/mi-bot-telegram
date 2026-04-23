@@ -3013,16 +3013,27 @@ def _fetch_forex_news_sync(target_date=None):
         "https://www.forexfactory.com/ffcal_week_next.xml",
     ]
 
+    HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/xml,text/xml,*/*;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Referer': 'https://www.forexfactory.com/',
+    }
+
     all_events = []
+    fetch_ok = False
     for url in urls:
         try:
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 xml_data = resp.read()
+            # Verificar que es XML válido (no página Cloudflare)
+            if not xml_data.strip().startswith(b'<'):
+                logger.warning(f"ForexFactory devolvió non-XML para {url}")
+                continue
             root = ET.fromstring(xml_data)
+            fetch_ok = True
         except Exception as e:
             logger.warning(f"ForexFactory fetch error ({url}): {e}")
             continue
@@ -3071,10 +3082,12 @@ def _fetch_forex_news_sync(target_date=None):
             })
 
     all_events.sort(key=lambda x: x['sort_key'])
-    return all_events
+    return all_events, fetch_ok
 
 
-def _format_forex_news(events, fecha_label="hoy"):
+def _format_forex_news(events, fecha_label="hoy", fetch_ok=True):
+    if not fetch_ok:
+        return f"⚠️ No pude conectar con ForexFactory {fecha_label}. Revisa manualmente."
     if not events:
         return f"📰 Sin noticias de alto impacto {fecha_label}."
     lines = [f"🔴 NOTICIAS ALTO IMPACTO — {fecha_label.upper()}\n{'─'*30}\n"]
@@ -3108,12 +3121,12 @@ async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("🔍 Consultando ForexFactory...")
     try:
-        events = await asyncio.wait_for(
+        events, fetch_ok = await asyncio.wait_for(
             asyncio.to_thread(_fetch_forex_news_sync, target),
-            timeout=20
+            timeout=25
         )
-        texto = _format_forex_news(events, label)
-        await update.message.reply_text(texto)
+        texto = _format_forex_news(events, label, fetch_ok)
+        await msg.edit_text(texto)
     except asyncio.TimeoutError:
         await msg.edit_text("⏱ ForexFactory tardó demasiado. Intenta de nuevo.")
     except Exception as e:
@@ -3130,8 +3143,8 @@ async def job_forex_news(context: ContextTypes.DEFAULT_TYPE):
     target = datetime.now(mx).date()
     label  = datetime.now(mx).strftime("%A %d/%m")
     try:
-        events = await asyncio.to_thread(_fetch_forex_news_sync, target)
-        msg    = _format_forex_news(events, label)
+        events, fetch_ok = await asyncio.to_thread(_fetch_forex_news_sync, target)
+        msg    = _format_forex_news(events, label, fetch_ok)
         await context.bot.send_message(chat_id=chat_id, text=msg)
     except Exception as e:
         logger.error(f"job_forex_news error: {e}")
