@@ -3071,20 +3071,38 @@ def _fetch_forex_news_sync(target_date=None, days=1):
 
         raw_events = data.get("result", [])
         logger.info(f"TradingView calendar: {len(raw_events)} eventos totales")
-        if raw_events:
-            logger.info(f"TV primer evento campos: {list(raw_events[0].keys())} | valores: {raw_events[0]}")
 
-        # Palabras clave de eventos de baja relevancia (subastas de deuda, no datos macro)
-        _SKIP_KW = ("auction", "bubill", "btf ", "bill auction", "note auction",
-                    "bond auction", "t-bill", "linker", "obl ", "bobl", "bund auction")
+        # Whitelist: solo eventos que mueven mercados forex (equivalente a 3 barras TradingView)
+        _HIGH_KW = (
+            "cpi", "consumer price index", "inflation rate", "core inflation",
+            "ppi", "producer price",
+            "pce", "personal consumption expenditure",
+            "gdp", "gross domestic product",
+            "nonfarm payroll", "non-farm payroll", "nfp",
+            "employment change", "unemployment rate",
+            "jobless claims", "claimant count",
+            "pmi",
+            "ism manufacturing", "ism non-manufacturing", "ism services",
+            "interest rate decision", "rate decision", "monetary policy decision",
+            "monetary policy statement", "rate statement",
+            "cash rate", "fed funds", "fomc",
+            "bank rate", "deposit rate", "repo rate",
+            "press conference",
+            "retail sales",
+            "durable goods",
+            "trade balance",
+            "housing starts", "building permits",
+            "testimony",
+            "flash gdp",
+            "average earnings", "wage",
+        )
 
         for ev in raw_events:
-            # TradingView: importance=0 es alto impacto, -1 es el resto
             imp = ev.get("importance")
-            if imp != 0:
+            if imp == -1:  # feriados y eventos sin datos
                 continue
             title_lc = ev.get("title", "").lower()
-            if any(kw in title_lc for kw in _SKIP_KW):
+            if not any(kw in title_lc for kw in _HIGH_KW):
                 continue
             currency = ev.get("currency", "").upper()
             if currency not in _FOREX_CURRENCIES:
