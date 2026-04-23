@@ -1768,7 +1768,7 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         desc     = text.strip()
 
         # Guardar gasto con descripción libre
-        registrar_gasto(monto, None, descripcion=desc, comercio=comercio)
+        cat_desc = registrar_gasto(monto, None, descripcion=desc, comercio=comercio)
 
         # Limpiar estado y pending
         pending = d.get("gmail_pending", {})
@@ -1783,6 +1783,9 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             f"✅ *{monto_esc} registrado*\n_{desc_esc}_",
             parse_mode='MarkdownV2'
         )
+        alert = check_budget_alert(cat_desc)
+        if alert:
+            await update.message.reply_text(alert, parse_mode='MarkdownV2')
         return
 
     # 1. Flujo semanal/mensual activo
@@ -2438,6 +2441,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ *{monto_esc} en {cat_esc} registrado*",
             parse_mode='MarkdownV2'
         )
+        alert = check_budget_alert(categoria)
+        if alert:
+            await query.message.reply_text(alert, parse_mode='MarkdownV2')
 
 # ------------------------------------
 # HANDLER DE MENSAJES
@@ -3248,6 +3254,80 @@ async def job_gmail_check(context: ContextTypes.DEFAULT_TYPE, window_hours: floa
 
 
 # ------------------------------------
+# PESO / MEDIDAS
+# ------------------------------------
+
+def _formato_peso(registros):
+    if not registros:
+        return "No hay registros de peso.\nUso: /peso 78.5"
+    ultimos = registros[-12:]  # últimos 12 registros
+    vals = [r["valor"] for r in ultimos]
+    minv, maxv = min(vals), max(vals)
+    rango = maxv - minv if maxv != minv else 1
+    WIDTH = 20
+    lines = ["📊 *Peso — historial*\n"]
+    for r in ultimos:
+        fecha = r["fecha"][5:]  # MM-DD
+        v = r["valor"]
+        bar_len = int((v - minv) / rango * WIDTH) if rango else WIDTH // 2
+        bar = "█" * bar_len + "░" * (WIDTH - bar_len)
+        lines.append(f"`{fecha}` {bar} *{v:.1f} kg*")
+    if len(vals) >= 2:
+        diff = vals[-1] - vals[0]
+        trend = f"{'▼' if diff < 0 else '▲'} {abs(diff):.1f} kg vs primer registro"
+        lines.append(f"\n_{trend}_")
+    return "\n".join(lines)
+
+
+async def cmd_peso(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Registra o muestra historial de peso. /peso 78.5"""
+    if not context.args:
+        d = load_data()
+        texto = _formato_peso(d.get("peso", []))
+        await update.message.reply_text(texto, parse_mode='MarkdownV2')
+        return
+    try:
+        valor = float(context.args[0].replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("Uso: /peso 78.5")
+        return
+    d = load_data()
+    if "peso" not in d:
+        d["peso"] = []
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    d["peso"] = [p for p in d["peso"] if p["fecha"] != fecha]
+    d["peso"].append({"fecha": fecha, "valor": valor})
+    d["peso"].sort(key=lambda x: x["fecha"])
+    save_data(d)
+    texto = _formato_peso(d["peso"])
+    await update.message.reply_text(texto, parse_mode='MarkdownV2')
+
+
+# ------------------------------------
+# BACKUP SEMANAL
+# ------------------------------------
+
+async def job_backup_semanal(context: ContextTypes.DEFAULT_TYPE):
+    """Domingo 9pm México — manda registro.json como documento."""
+    if datetime.now(TIMEZONE).weekday() != 6:  # 6 = domingo
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    data_path = os.path.join(DATA_DIR, "registro.json")
+    if not os.path.exists(data_path):
+        return
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    with open(data_path, 'rb') as f:
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=f,
+            filename=f"registro_backup_{fecha}.json",
+            caption=f"💾 Backup semanal — {fecha}"
+        )
+
+
+# ------------------------------------
 # MAIN
 # ------------------------------------
 
@@ -3274,6 +3354,7 @@ def main():
     app.add_handler(CommandHandler("noticias",     cmd_noticias))
     app.add_handler(CommandHandler("reporte_mes",  cmd_reporte_mes))
     app.add_handler(CommandHandler("reporte_anual", cmd_reporte_anual))
+    app.add_handler(CommandHandler("peso",        cmd_peso))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -3296,9 +3377,11 @@ def main():
     jq.run_daily(job_reflexion_mensual_dia1,  time=dt_time(21, 30, tzinfo=mx), name="reflexion_mensual")
     # 1 de enero: reporte anual
     jq.run_daily(job_reporte_anual,           time=dt_time(10, 0,  tzinfo=mx), name="reporte_anual")
-    # Gmail: revisar cada 30 minutos si las credenciales están configuradas
+    # Gmail: revisar cada minuto si las credenciales están configuradas
     if os.environ.get("GMAIL_CLIENT_ID"):
         jq.run_repeating(job_gmail_check, interval=60, first=30, name="gmail")
+    # Backup dominical 9pm
+    jq.run_daily(job_backup_semanal, time=dt_time(21, 0, tzinfo=mx), name="backup")
 
     logger.info("Bot iniciado. Esperando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
