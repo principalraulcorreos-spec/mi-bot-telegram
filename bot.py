@@ -322,12 +322,14 @@ def load_data():
         data.setdefault("notas", [])
         data.setdefault("trade_pending", None)
         data.setdefault("trade_fotos", [])
+        data.setdefault("recordatorios", [])
         return data
     return {
         "registros": [], "chat_id": None, "flow": None, "esperando": None,
         "gastos": [], "habitos": [], "habito_flow": None,
         "ai_history": [], "ai_last_message": None, "pending_action": None,
         "trades": [], "notas": [], "trade_pending": None, "trade_fotos": [],
+        "recordatorios": [],
     }
 
 def save_data(data):
@@ -1894,6 +1896,27 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         except (ValueError, AttributeError):
             pass
 
+    # 3.7. Detección natural de recordatorios / alarmas
+    _rec_kw = ('recuérdame', 'recuerdame', 'pon una alarma', 'pon alarma', 'ponme una alarma',
+               'ponme alarma', 'alarma para', 'crea un recordatorio')
+    if any(kw in _tl for kw in _rec_kw):
+        result = _parse_recordatorio(text)
+        if result:
+            fecha_iso, repetir, msg = result
+            guardar_recordatorio(fecha_iso, msg, repetir)
+            try:
+                dt_fmt = TIMEZONE.localize(datetime.strptime(fecha_iso, "%Y-%m-%dT%H:%M"))
+                cuando = dt_fmt.strftime("%A %d/%m a las %H:%M")
+            except Exception:
+                cuando = fecha_iso
+            rep_txt = f" (repetirá cada {repetir})" if repetir else ""
+            await update.message.reply_text(
+                f"⏰ Recordatorio guardado\n\n*{msg}*\n_{cuando}{rep_txt}_",
+                parse_mode='Markdown'
+            )
+            return
+        # Si no pudo parsear, deja que la IA lo maneje con contexto
+
     # 4. IA — catch-all
     if os.environ.get("GROQ_API_KEY"):
         await handle_ai_message(update, context, text)
@@ -3372,6 +3395,194 @@ async def job_backup_semanal(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------------
+# RECORDATORIOS
+# ------------------------------------
+
+def guardar_recordatorio(fecha_iso, mensaje, repetir=None):
+    import uuid
+    data = load_data()
+    data.setdefault("recordatorios", [])
+    data["recordatorios"].append({
+        "id": str(uuid.uuid4())[:8],
+        "fecha": fecha_iso,
+        "mensaje": mensaje,
+        "repetir": repetir,
+        "activo": True,
+    })
+    save_data(data)
+
+def eliminar_recordatorio(rid):
+    data = load_data()
+    data["recordatorios"] = [r for r in data.get("recordatorios", []) if r["id"] != rid]
+    save_data(data)
+
+def _parse_recordatorio(text):
+    """Intenta parsear fecha/hora y mensaje de un texto natural en español.
+    Retorna (fecha_iso, repetir, mensaje) o None."""
+    tl = text.lower()
+    mx = TIMEZONE
+    now = datetime.now(mx)
+
+    time_re = re.compile(
+        r'a\s+las\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?|(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
+        re.IGNORECASE
+    )
+    time_m = time_re.search(tl)
+    if not time_m:
+        return None
+    g = time_m.groups()
+    if g[0]:
+        h_raw, m_str, ampm = int(g[0]), g[1], g[2]
+    else:
+        h_raw, m_str, ampm = int(g[3]), g[4], g[5]
+    minute = int(m_str) if m_str else 0
+    if ampm and ampm.lower() == 'pm' and h_raw < 12:
+        h_raw += 12
+    elif ampm and ampm.lower() == 'am' and h_raw == 12:
+        h_raw = 0
+    if h_raw > 23:
+        return None
+
+    days_map = {
+        'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2,
+        'jueves': 3, 'viernes': 4, 'sábado': 5, 'sabado': 5, 'domingo': 6,
+    }
+    target_date = None
+    repetir = None
+
+    en_horas_m = re.search(r'en\s+(\d+)\s+horas?', tl)
+    if en_horas_m:
+        target_dt_raw = now + timedelta(hours=int(en_horas_m.group(1)))
+        fecha_iso = target_dt_raw.strftime("%Y-%m-%dT%H:%M")
+        msg = _limpiar_msg_recordatorio(text)
+        return (fecha_iso, None, msg)
+
+    if 'mañana' in tl or 'manana' in tl:
+        target_date = (now + timedelta(days=1)).date()
+    elif 'hoy' in tl or 'esta noche' in tl:
+        target_date = now.date()
+    elif re.search(r'cada\s+d[ií]a|diario|todos\s+los\s+d[ií]as', tl):
+        target_date = now.date()
+        repetir = 'diario'
+    else:
+        cada_m = re.search(
+            r'cada\s+(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)', tl
+        )
+        if cada_m:
+            raw = cada_m.group(1).lower()
+            key = raw.replace('é','e').replace('á','a')
+            wd = days_map.get(raw) or days_map.get(key)
+            repetir = raw
+            if wd is not None:
+                days_ahead = (wd - now.weekday()) % 7 or 7
+                target_date = (now + timedelta(days=days_ahead)).date()
+        else:
+            for day_key, wd in days_map.items():
+                if day_key in tl:
+                    days_ahead = (wd - now.weekday()) % 7 or 7
+                    target_date = (now + timedelta(days=days_ahead)).date()
+                    break
+
+    if target_date is None:
+        return None
+
+    try:
+        target_dt = mx.localize(datetime.combine(target_date, dt_time(h_raw, minute)))
+    except Exception:
+        return None
+
+    if target_dt <= now and repetir is None:
+        return None
+
+    msg = _limpiar_msg_recordatorio(text)
+    return (target_dt.strftime("%Y-%m-%dT%H:%M"), repetir, msg)
+
+
+def _limpiar_msg_recordatorio(text):
+    msg = re.sub(
+        r'(?:recuérdame|recuerdame|pon(?:me)?\s+(?:una\s+)?alarma|alarma\s+para|recordatorio)',
+        '', text, flags=re.IGNORECASE
+    )
+    msg = re.sub(
+        r'(?:mañana|manana|hoy|esta\s+noche|el\s+(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)|'
+        r'cada\s+(?:d[ií]a|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo))',
+        '', msg, flags=re.IGNORECASE
+    )
+    msg = re.sub(r'a\s+las\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}(?::\d{2})?\s*(?:am|pm)', '', msg, flags=re.IGNORECASE)
+    msg = re.sub(r'^\s*(?:que|a que|de que)\s+', '', msg, flags=re.IGNORECASE)
+    msg = re.sub(r'\s+', ' ', msg).strip().strip('.,;')
+    return msg if msg else "Recordatorio"
+
+
+async def cmd_recordatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    recs = [r for r in load_data().get("recordatorios", []) if r.get("activo", True)]
+    if not recs:
+        await update.message.reply_text("No tienes recordatorios activos.\n\nEjemplo: _'recuérdame mañana a las 8am ir al banco'_", parse_mode='Markdown')
+        return
+    lines = ["⏰ *Tus recordatorios activos:*\n"]
+    for r in recs:
+        try:
+            dt = TIMEZONE.localize(datetime.strptime(r["fecha"], "%Y-%m-%dT%H:%M"))
+            fecha_fmt = dt.strftime("%a %d/%m a las %H:%M")
+        except Exception:
+            fecha_fmt = r["fecha"]
+        rep_txt = f" _(repite cada {r['repetir']})_" if r.get("repetir") else ""
+        lines.append(f"• `{r['id']}` — {fecha_fmt}{rep_txt}\n  {r['mensaje']}")
+    lines.append("\nPara eliminar: `/borrar_rec ID`")
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+
+async def cmd_borrar_rec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Uso: `/borrar_rec ID`\n\nUsa /recordatorio para ver los IDs.", parse_mode='Markdown')
+        return
+    rid = context.args[0]
+    eliminar_recordatorio(rid)
+    await update.message.reply_text(f"✅ Recordatorio `{rid}` eliminado.", parse_mode='Markdown')
+
+
+async def job_check_recordatorios(context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    recs = data.get("recordatorios", [])
+    if not recs:
+        return
+    now = datetime.now(TIMEZONE)
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    changed = False
+    days_map = {
+        'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2,
+        'jueves': 3, 'viernes': 4, 'sábado': 5, 'sabado': 5, 'domingo': 6,
+    }
+    for r in recs:
+        if not r.get("activo", True):
+            continue
+        try:
+            fecha_dt = TIMEZONE.localize(datetime.strptime(r["fecha"], "%Y-%m-%dT%H:%M"))
+        except ValueError:
+            continue
+        if now >= fecha_dt:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⏰ *Recordatorio*\n\n{r['mensaje']}",
+                parse_mode='Markdown'
+            )
+            changed = True
+            repetir = r.get("repetir")
+            if repetir == "diario":
+                r["fecha"] = (fecha_dt + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")
+            elif repetir and repetir in days_map:
+                wd = days_map[repetir]
+                days_ahead = (wd - fecha_dt.weekday()) % 7 or 7
+                r["fecha"] = (fecha_dt + timedelta(days=days_ahead)).strftime("%Y-%m-%dT%H:%M")
+            else:
+                r["activo"] = False
+    if changed:
+        save_data(data)
+
+
+# ------------------------------------
 # MAIN
 # ------------------------------------
 
@@ -3398,7 +3609,9 @@ def main():
     app.add_handler(CommandHandler("noticias",     cmd_noticias))
     app.add_handler(CommandHandler("reporte_mes",  cmd_reporte_mes))
     app.add_handler(CommandHandler("reporte_anual", cmd_reporte_anual))
-    app.add_handler(CommandHandler("peso",        cmd_peso))
+    app.add_handler(CommandHandler("peso",          cmd_peso))
+    app.add_handler(CommandHandler("recordatorio",  cmd_recordatorio))
+    app.add_handler(CommandHandler("borrar_rec",    cmd_borrar_rec))
     app.add_handler(CommandHandler("test",      cmd_test))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -3426,6 +3639,21 @@ def main():
         jq.run_repeating(job_gmail_check, interval=300, first=30, name="gmail")
     # Backup dominical 9pm
     jq.run_daily(job_backup_semanal, time=dt_time(21, 0, tzinfo=mx), name="backup")
+    # Recordatorios: revisar cada minuto
+    jq.run_repeating(job_check_recordatorios, interval=60, first=10, name="recordatorios")
+
+    # Recordatorio del reloj (miércoles 2026-04-30 10am) — solo si no existe
+    _data = load_data()
+    _data.setdefault("recordatorios", [])
+    if not any(r.get("id") == "reloj001" for r in _data["recordatorios"]):
+        _data["recordatorios"].append({
+            "id": "reloj001",
+            "fecha": "2026-04-30T10:00",
+            "mensaje": "¿Ya compraste el reloj? Cuando lo tengas dime y lo conectamos al bot ⌚",
+            "repetir": None,
+            "activo": True,
+        })
+        save_data(_data)
 
     logger.info("Bot iniciado. Esperando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
