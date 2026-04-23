@@ -3143,6 +3143,21 @@ def _format_forex_news(events, fecha_label="hoy", fetch_ok=True):
     return "\n".join(lines)
 
 
+def _split_text(text, max_len=4000):
+    """Divide texto en chunks respetando saltos de línea."""
+    lines = text.split("\n")
+    chunks, cur = [], ""
+    for line in lines:
+        if len(cur) + len(line) + 1 > max_len:
+            chunks.append(cur.rstrip())
+            cur = line + "\n"
+        else:
+            cur += line + "\n"
+    if cur.strip():
+        chunks.append(cur.rstrip())
+    return chunks
+
+
 async def _send_noticias(bot_or_update, chat_id, target_date, label, days=1, edit_msg=None):
     """Helper compartido: fetch y envío de noticias."""
     events, fetch_ok = await asyncio.wait_for(
@@ -3150,10 +3165,14 @@ async def _send_noticias(bot_or_update, chat_id, target_date, label, days=1, edi
         timeout=25
     )
     texto = _format_forex_news(events, label, fetch_ok)
+    chunks = _split_text(texto)
     if edit_msg:
-        await edit_msg.edit_text(texto)
+        await edit_msg.edit_text(chunks[0])
+        for chunk in chunks[1:]:
+            await edit_msg.reply_text(chunk)
     else:
-        await bot_or_update.send_message(chat_id=chat_id, text=texto)
+        for chunk in chunks:
+            await bot_or_update.send_message(chat_id=chat_id, text=chunk)
 
 
 async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
