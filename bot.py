@@ -3052,7 +3052,7 @@ def _fetch_forex_news_sync(target_date=None, days=1):
     params = {
         "from":       from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "to":         to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "importance": -1,  # -1 = all, luego filtramos high (1)
+        "importance": 1,  # 1 = solo alto impacto (3 barras en TradingView)
     }
     headers = {
         "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
