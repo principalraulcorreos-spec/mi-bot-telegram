@@ -3092,7 +3092,9 @@ def _fetch_forex_news_sync(target_date=None, days=1):
         resp.raise_for_status()
         raw_events = resp.json()
         fetch_ok = True
-        logger.info(f"FXStreet status={resp.status_code} type={type(raw_events).__name__} len={len(raw_events) if isinstance(raw_events, list) else 'N/A'} sample={str(raw_events)[:300]}")
+        logger.info(f"FXStreet: {len(raw_events) if isinstance(raw_events, list) else 'N/A'} eventos")
+        if raw_events:
+            logger.info(f"FXStreet primer evento completo: {raw_events[0]}")
 
         for ev in raw_events:
             currency = ev.get("currencyCode", "").upper()
