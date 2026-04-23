@@ -3049,11 +3049,12 @@ def _fetch_forex_news_sync(target_date=None, days=1):
     to_dt   = from_dt + timedelta(days=days)
 
     url = "https://economic-calendar.tradingview.com/events"
-    params = {
-        "from":       from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "to":         to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "importance": 1,  # 1 = solo alto impacto (3 barras en TradingView)
-    }
+    # importance[]=1 = High (3 barras) en la API de TradingView
+    params = [
+        ("from", from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+        ("to",   to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+        ("importance[]", 1),
+    ]
     headers = {
         "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Origin":      "https://www.tradingview.com",
@@ -3070,6 +3071,8 @@ def _fetch_forex_news_sync(target_date=None, days=1):
 
         raw_events = data.get("result", [])
         logger.info(f"TradingView calendar: {len(raw_events)} eventos totales")
+        if raw_events:
+            logger.info(f"TV primer evento campos: {list(raw_events[0].keys())} | valores: {raw_events[0]}")
 
         # Palabras clave de eventos de baja relevancia (subastas de deuda, no datos macro)
         _SKIP_KW = ("auction", "bubill", "btf ", "bill auction", "note auction",
