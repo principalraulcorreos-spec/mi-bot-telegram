@@ -2909,7 +2909,7 @@ def _parse_email_financial_sync(subject: str, from_addr: str, body: str) -> dict
     if groq_ok:
         try:
             resp = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0,
@@ -3069,18 +3069,19 @@ def _fetch_forex_news_sync(target_date=None, days=1):
         fetch_ok = True
 
         raw_events = data.get("result", [])
-        logger.info(f"TradingView calendar: {len(raw_events)} eventos totales, importance values: {set(e.get('importance') for e in raw_events[:20])}")
+        logger.info(f"TradingView calendar: {len(raw_events)} eventos totales")
+
+        # Palabras clave de eventos de baja relevancia (subastas de deuda, no datos macro)
+        _SKIP_KW = ("auction", "bubill", "btf ", "bill auction", "note auction",
+                    "bond auction", "t-bill", "linker", "obl ", "bobl", "bund auction")
 
         for ev in raw_events:
-            # TradingView: importance 1=high, 2=medium, 3=low (inverso a lo esperado)
-            # Aceptamos cualquier valor <= 1 (high), o si el campo es string "high"
+            # TradingView: importance=0 es alto impacto, -1 es el resto
             imp = ev.get("importance")
-            imp_str = str(ev.get("importance_str", "")).lower()
-            if imp_str == "high":
-                pass  # aceptar
-            elif isinstance(imp, (int, float)) and imp <= 1:
-                pass  # aceptar
-            else:
+            if imp != 0:
+                continue
+            title_lc = ev.get("title", "").lower()
+            if any(kw in title_lc for kw in _SKIP_KW):
                 continue
             currency = ev.get("currency", "").upper()
             if currency not in _FOREX_CURRENCIES:
@@ -3097,12 +3098,13 @@ def _fetch_forex_news_sync(target_date=None, days=1):
                     continue
             dt_mx = dt_utc.astimezone(mx_tz)
 
-            # Verificar que cae en el día objetivo (hora México)
-            if dt_mx.date() != target_date:
+            # Verificar que cae en el rango de fechas (hora México)
+            end_date = target_date + timedelta(days=days)
+            if not (target_date <= dt_mx.date() < end_date):
                 continue
 
-            hora_mx  = dt_mx.strftime("%H:%M")
-            sort_key = dt_mx.hour * 60 + dt_mx.minute
+            hora_mx  = dt_mx.strftime("%A %d/%m %H:%M") if days > 1 else dt_mx.strftime("%H:%M")
+            sort_key = (dt_mx - datetime.combine(target_date, datetime.min.time()).replace(tzinfo=mx_tz)).seconds // 60 + dt_mx.toordinal() * 1440
 
             all_events.append({
                 "title":    ev.get("title", "").strip(),
@@ -3387,9 +3389,9 @@ def main():
     jq.run_daily(job_reflexion_mensual_dia1,  time=dt_time(21, 30, tzinfo=mx), name="reflexion_mensual")
     # 1 de enero: reporte anual
     jq.run_daily(job_reporte_anual,           time=dt_time(10, 0,  tzinfo=mx), name="reporte_anual")
-    # Gmail: revisar cada minuto si las credenciales están configuradas
+    # Gmail: revisar cada 5 minutos (reduce consumo de tokens Groq)
     if os.environ.get("GMAIL_CLIENT_ID"):
-        jq.run_repeating(job_gmail_check, interval=60, first=30, name="gmail")
+        jq.run_repeating(job_gmail_check, interval=300, first=30, name="gmail")
     # Backup dominical 9pm
     jq.run_daily(job_backup_semanal, time=dt_time(21, 0, tzinfo=mx), name="backup")
 
