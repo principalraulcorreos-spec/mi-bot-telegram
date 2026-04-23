@@ -1291,7 +1291,7 @@ INSTRUCCIONES COMO COACH:
 
 DETECCIÓN DE ACCIONES — incluye al final (línea separada) si aplica:
 
-Si detectas un GASTO con monto:
+Si detectas un GASTO con monto MAYOR A CERO (nunca generes esto si no hay monto explícito):
 ACCION_GASTO:[monto]:[categoria]
 Categorías: comida, transporte, capricho, salud, otros
 
@@ -1346,7 +1346,9 @@ def parse_ai_response(text: str):
             parts = line.split(':')
             if len(parts) >= 3:
                 try:
-                    action = {"type": "gasto", "amount": float(parts[1].strip()), "category": parts[2].strip().lower()}
+                    amt = float(parts[1].strip())
+                    if amt > 0:
+                        action = {"type": "gasto", "amount": amt, "category": parts[2].strip().lower()}
                 except Exception:
                     clean.append(line)
         elif line.startswith('ACCION_INGRESO:'):
