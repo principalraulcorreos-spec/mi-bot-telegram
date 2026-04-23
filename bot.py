@@ -1837,6 +1837,37 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(alert, parse_mode='MarkdownV2')
         return
 
+    # 3.5. Detección rápida de consultas de noticias forex
+    _tl = text.strip().lower()
+    _news_kw = ("noticia", "noticias", "alto impacto", "high impact", "calendario econom",
+                "forex news", "eventos forex", "eventos de hoy", "qué hay mañana",
+                "que hay mañana", "que hay esta semana", "qué hay esta semana")
+    if any(kw in _tl for kw in _news_kw):
+        mx  = TIMEZONE
+        now = datetime.now(mx)
+        if any(w in _tl for w in ("semana", "week", "esta semana")):
+            monday = now.date() - timedelta(days=now.weekday())
+            target = monday
+            label  = f"semana {monday.strftime('%d/%m')}–{(monday + timedelta(days=4)).strftime('%d/%m')}"
+            days   = 7
+        elif any(w in _tl for w in ("mañana", "manana", "tomorrow")):
+            target = (now + timedelta(days=1)).date()
+            label  = "mañana"
+            days   = 1
+        else:
+            target = now.date()
+            label  = now.strftime("%A %d/%m")
+            days   = 1
+        msg = await update.message.reply_text("🔍 Consultando calendario económico...")
+        try:
+            await _send_noticias(None, None, target, label, days, edit_msg=msg)
+        except asyncio.TimeoutError:
+            await msg.edit_text("⏱ Tardó demasiado. Usa /noticias")
+        except Exception as e:
+            logger.error(f"news keyword handler error: {e}")
+            await msg.edit_text("❌ No pude obtener el calendario. Usa /noticias")
+        return
+
     # 4. IA — catch-all
     if os.environ.get("GROQ_API_KEY"):
         await handle_ai_message(update, context, text)
@@ -2993,93 +3024,81 @@ def gmail_cambiar_keyboard(short_id: str) -> InlineKeyboardMarkup:
 
 
 # ------------------------------------
-# FOREX FACTORY — NOTICIAS ALTO IMPACTO
-# ------------------------------------
+# NOTICIAS FOREX — ALTO IMPACTO (TradingView Economic Calendar)
+# -------------------------------------------------------------
 
-def _fetch_forex_news_sync(target_date=None):
-    """Descarga eventos de alto impacto de ForexFactory para una fecha dada."""
-    import urllib.request
-    import xml.etree.ElementTree as ET
+# Códigos de monedas principales para filtrar
+_FOREX_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF"}
 
-    et_tz = pytz.timezone('America/New_York')  # ForexFactory usa ET
+def _fetch_forex_news_sync(target_date=None, days=1):
+    """Descarga eventos de alto impacto vía TradingView Economic Calendar API."""
+    import requests as req_lib
+
     mx_tz = TIMEZONE
-
     if target_date is None:
         target_date = datetime.now(mx_tz).date()
 
-    # Intentar semana actual y siguiente
-    urls = [
-        "https://www.forexfactory.com/ffcal_week_this.xml",
-        "https://www.forexfactory.com/ffcal_week_next.xml",
-    ]
+    # Rango: medianoche a medianoche UTC del día objetivo
+    from_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=pytz.utc)
+    to_dt   = from_dt + timedelta(days=days)
 
-    HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/xml,text/xml,*/*;q=0.9',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Referer': 'https://www.forexfactory.com/',
+    url = "https://economic-calendar.tradingview.com/events"
+    params = {
+        "from":       from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "to":         to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "importance": -1,  # -1 = all, luego filtramos high (1)
+    }
+    headers = {
+        "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin":      "https://www.tradingview.com",
+        "Referer":     "https://www.tradingview.com/",
     }
 
-    all_events = []
     fetch_ok = False
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                xml_data = resp.read()
-            # Verificar que es XML válido (no página Cloudflare)
-            if not xml_data.strip().startswith(b'<'):
-                logger.warning(f"ForexFactory devolvió non-XML para {url}")
-                continue
-            root = ET.fromstring(xml_data)
-            fetch_ok = True
-        except Exception as e:
-            logger.warning(f"ForexFactory fetch error ({url}): {e}")
-            continue
+    all_events = []
+    try:
+        resp = req_lib.get(url, params=params, headers=headers, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        fetch_ok = True
 
-        for ev in root.findall('event'):
-            impact = ev.findtext('impact', '').strip().lower()
-            if impact != 'high':
+        for ev in data.get("result", []):
+            # importance: 1=low, 2=medium, 3=high en TradingView
+            if ev.get("importance", 0) < 3:
+                continue
+            currency = ev.get("currency", "").upper()
+            if currency not in _FOREX_CURRENCIES:
                 continue
 
-            title    = ev.findtext('title', '').strip()
-            country  = ev.findtext('country', '').strip()
-            date_str = ev.findtext('date', '').strip()
-            time_str = ev.findtext('time', '').strip()
-            forecast = ev.findtext('forecast', '').strip()
-            previous = ev.findtext('previous', '').strip()
-
+            # Fecha/hora en UTC → convertir a México
+            date_str = ev.get("date", "")
             try:
-                # Formato: "Sunday, Apr 13, 2026"  hora: "8:30am"
-                if time_str.lower() in ('all day', 'tentative', ''):
-                    # Parsear solo la fecha
-                    date_obj = datetime.strptime(date_str, "%A, %b %d, %Y").date()
-                    if date_obj != target_date:
-                        continue
-                    hora_mx  = "Todo el día"
-                    sort_key = 0
-                else:
-                    dt_str  = f"{date_str} {time_str.upper()}"
-                    dt_et   = datetime.strptime(dt_str, "%A, %b %d, %Y %I:%M%p")
-                    dt_et   = et_tz.localize(dt_et)
-                    dt_mx   = dt_et.astimezone(mx_tz)
-                    if dt_mx.date() != target_date:
-                        continue
-                    hora_mx  = dt_mx.strftime("%H:%M")
-                    sort_key = dt_mx.hour * 60 + dt_mx.minute
-            except Exception as e:
-                logger.warning(f"FF parse error '{date_str} {time_str}': {e}")
+                dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=pytz.utc)
+            except ValueError:
+                try:
+                    dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                except Exception:
+                    continue
+            dt_mx = dt_utc.astimezone(mx_tz)
+
+            # Verificar que cae en el día objetivo (hora México)
+            if dt_mx.date() != target_date:
                 continue
+
+            hora_mx  = dt_mx.strftime("%H:%M")
+            sort_key = dt_mx.hour * 60 + dt_mx.minute
 
             all_events.append({
-                'title':    title,
-                'country':  country,
-                'hora_mx':  hora_mx,
-                'forecast': forecast,
-                'previous': previous,
-                'sort_key': sort_key,
+                "title":    ev.get("title", "").strip(),
+                "country":  currency,
+                "hora_mx":  hora_mx,
+                "forecast": str(ev.get("forecast") or ""),
+                "previous": str(ev.get("previous") or ""),
+                "sort_key": sort_key,
             })
+
+    except Exception as e:
+        logger.warning(f"TradingView calendar fetch error: {e}")
 
     all_events.sort(key=lambda x: x['sort_key'])
     return all_events, fetch_ok
@@ -3106,29 +3125,45 @@ def _format_forex_news(events, fecha_label="hoy", fetch_ok=True):
     return "\n".join(lines)
 
 
+async def _send_noticias(bot_or_update, chat_id, target_date, label, days=1, edit_msg=None):
+    """Helper compartido: fetch y envío de noticias."""
+    events, fetch_ok = await asyncio.wait_for(
+        asyncio.to_thread(_fetch_forex_news_sync, target_date, days),
+        timeout=25
+    )
+    texto = _format_forex_news(events, label, fetch_ok)
+    if edit_msg:
+        await edit_msg.edit_text(texto)
+    else:
+        await bot_or_update.send_message(chat_id=chat_id, text=texto)
+
+
 async def cmd_noticias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra noticias de alto impacto del día (o mañana con /noticias mañana)."""
+    """Muestra noticias de alto impacto. Args: mañana | semana"""
     arg = " ".join(context.args).strip().lower() if context.args else ""
     mx  = TIMEZONE
     now = datetime.now(mx)
 
-    if arg in ("mañana", "manana", "tomorrow"):
+    if arg in ("semana", "week", "esta semana"):
+        # Lunes de la semana actual
+        monday = now.date() - timedelta(days=now.weekday())
+        target = monday
+        label  = f"semana {monday.strftime('%d/%m')}–{(monday + timedelta(days=4)).strftime('%d/%m')}"
+        days   = 7
+    elif arg in ("mañana", "manana", "tomorrow"):
         target = (now + timedelta(days=1)).date()
         label  = "mañana"
+        days   = 1
     else:
         target = now.date()
-        label  = f"{now.strftime('%A %d/%m')}"
+        label  = now.strftime("%A %d/%m")
+        days   = 1
 
-    msg = await update.message.reply_text("🔍 Consultando ForexFactory...")
+    msg = await update.message.reply_text("🔍 Consultando calendario económico...")
     try:
-        events, fetch_ok = await asyncio.wait_for(
-            asyncio.to_thread(_fetch_forex_news_sync, target),
-            timeout=25
-        )
-        texto = _format_forex_news(events, label, fetch_ok)
-        await msg.edit_text(texto)
+        await _send_noticias(None, None, target, label, days, edit_msg=msg)
     except asyncio.TimeoutError:
-        await msg.edit_text("⏱ ForexFactory tardó demasiado. Intenta de nuevo.")
+        await msg.edit_text("⏱ El calendario tardó demasiado. Intenta de nuevo.")
     except Exception as e:
         logger.error(f"cmd_noticias error: {e}")
         await msg.edit_text(f"❌ Error: {e}")
@@ -3143,9 +3178,7 @@ async def job_forex_news(context: ContextTypes.DEFAULT_TYPE):
     target = datetime.now(mx).date()
     label  = datetime.now(mx).strftime("%A %d/%m")
     try:
-        events, fetch_ok = await asyncio.to_thread(_fetch_forex_news_sync, target)
-        msg    = _format_forex_news(events, label, fetch_ok)
-        await context.bot.send_message(chat_id=chat_id, text=msg)
+        await _send_noticias(context.bot, chat_id, target, label, days=1)
     except Exception as e:
         logger.error(f"job_forex_news error: {e}")
 
