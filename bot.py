@@ -3060,7 +3060,7 @@ def gmail_cambiar_keyboard(short_id: str) -> InlineKeyboardMarkup:
 _FOREX_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF"}
 
 def _fetch_forex_news_sync(target_date=None, days=1):
-    """Descarga eventos de alto impacto vía TradingView Economic Calendar API."""
+    """Descarga eventos de alto impacto vía Myfxbook Economic Calendar."""
     import requests as req_lib
 
     mx_tz = TIMEZONE
@@ -3068,72 +3068,58 @@ def _fetch_forex_news_sync(target_date=None, days=1):
         target_date = datetime.now(mx_tz).date()
 
     end_date = target_date + timedelta(days=days)
-    from_dt  = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=pytz.utc)
-    to_dt    = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=pytz.utc)
 
-    url = "https://economic-calendar.tradingview.com/events"
-    params = [
-        ("from", from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-        ("to",   to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-    ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin":     "https://www.tradingview.com",
-        "Referer":    "https://www.tradingview.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.myfxbook.com/forex-economic-calendar",
     }
-
-    # Eventos que realmente mueven mercados forex (equivalente a 3 barras)
-    _HIGH_KW = (
-        "cpi", "consumer price index", "inflation rate", "core inflation",
-        "ppi", "producer price",
-        "pce", "personal consumption expenditure",
-        "gdp", "gross domestic product", "flash gdp",
-        "nonfarm payroll", "non-farm payroll", "nfp",
-        "employment change", "unemployment rate",
-        "jobless claims", "claimant count",
-        "pmi",
-        "ism manufacturing", "ism non-manufacturing", "ism services",
-        "interest rate decision", "rate decision", "monetary policy decision",
-        "monetary policy statement", "rate statement",
-        "cash rate", "fed funds", "fomc",
-        "bank rate", "deposit rate", "repo rate",
-        "press conference", "testimony",
-        "retail sales", "durable goods", "trade balance",
-        "housing starts", "building permits",
-        "average earnings", "wage",
-    )
 
     fetch_ok = False
     all_events = []
     try:
-        resp = req_lib.get(url, params=params, headers=headers, timeout=20)
+        session = req_lib.Session()
+        # Obtener cookies visitando la página principal
+        session.get("https://www.myfxbook.com/forex-economic-calendar", headers={
+            "User-Agent": headers["User-Agent"],
+        }, timeout=15)
+
+        params = {
+            "start": target_date.strftime("%Y-%m-%d"),
+            "end":   end_date.strftime("%Y-%m-%d"),
+        }
+        resp = session.get(
+            "https://www.myfxbook.com/forex-economic-calendar-impl.json",
+            params=params, headers=headers, timeout=20
+        )
         resp.raise_for_status()
-        if not resp.content:
-            raise ValueError("Respuesta vacía")
         data = resp.json()
+        if data.get("error"):
+            raise ValueError(f"Myfxbook error: {data}")
         fetch_ok = True
 
-        raw_events = data.get("result", [])
-        logger.info(f"TradingView calendar: {len(raw_events)} eventos totales")
+        raw_events = data.get("calendar", [])
+        logger.info(f"Myfxbook calendar: {len(raw_events)} eventos, impact values: {set(e.get('impact') for e in raw_events[:30])}")
 
         for ev in raw_events:
-            if ev.get("importance") == -1:
-                continue
-            title_lc = ev.get("title", "").lower()
-            if not any(kw in title_lc for kw in _HIGH_KW):
+            # impact: 3=High, 2=Medium, 1=Low
+            if int(ev.get("impact", 0)) < 3:
                 continue
             currency = ev.get("currency", "").upper()
             if currency not in _FOREX_CURRENCIES:
                 continue
 
             date_str = ev.get("date", "")
+            time_str = ev.get("time", "")
             try:
-                dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=pytz.utc)
-            except ValueError:
-                try:
-                    dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                except Exception:
-                    continue
+                if time_str and time_str not in ("Tentative", "All Day", ""):
+                    dt_utc = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+                else:
+                    dt_utc = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=pytz.utc)
+            except Exception:
+                continue
             dt_mx = dt_utc.astimezone(mx_tz)
 
             if not (target_date <= dt_mx.date() < end_date):
@@ -3152,7 +3138,7 @@ def _fetch_forex_news_sync(target_date=None, days=1):
             })
 
     except Exception as e:
-        logger.warning(f"TradingView calendar fetch error: {e}")
+        logger.warning(f"Myfxbook calendar fetch error: {e}")
 
     all_events.sort(key=lambda x: x['sort_key'])
     return all_events, fetch_ok
