@@ -3068,9 +3068,19 @@ def _fetch_forex_news_sync(target_date=None, days=1):
         data = resp.json()
         fetch_ok = True
 
-        for ev in data.get("result", []):
-            # importance: 1=low, 2=medium, 3=high en TradingView
-            if ev.get("importance", 0) < 3:
+        raw_events = data.get("result", [])
+        logger.info(f"TradingView calendar: {len(raw_events)} eventos totales, importance values: {set(e.get('importance') for e in raw_events[:20])}")
+
+        for ev in raw_events:
+            # TradingView: importance 1=high, 2=medium, 3=low (inverso a lo esperado)
+            # Aceptamos cualquier valor <= 1 (high), o si el campo es string "high"
+            imp = ev.get("importance")
+            imp_str = str(ev.get("importance_str", "")).lower()
+            if imp_str == "high":
+                pass  # aceptar
+            elif isinstance(imp, (int, float)) and imp <= 1:
+                pass  # aceptar
+            else:
                 continue
             currency = ev.get("currency", "").upper()
             if currency not in _FOREX_CURRENCIES:
