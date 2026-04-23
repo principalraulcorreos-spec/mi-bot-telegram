@@ -3060,7 +3060,7 @@ def gmail_cambiar_keyboard(short_id: str) -> InlineKeyboardMarkup:
 _FOREX_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF"}
 
 def _fetch_forex_news_sync(target_date=None, days=1):
-    """Descarga eventos de alto impacto vía Myfxbook Economic Calendar."""
+    """Descarga eventos de alto impacto vía FXStreet Calendar API (volatility=3)."""
     import requests as req_lib
 
     mx_tz = TIMEZONE
@@ -3069,55 +3069,39 @@ def _fetch_forex_news_sync(target_date=None, days=1):
 
     end_date = target_date + timedelta(days=days)
 
+    url = "https://calendar.fxstreet.com/eventdate/"
+    params = {
+        "f":          "json",
+        "v":          "2",
+        "dateFrom":   target_date.strftime("%Y-%m-%d"),
+        "dateTo":     end_date.strftime("%Y-%m-%d"),
+        "timezone":   "America/Mexico_City",
+        "cultures":   "en-US",
+        "volatility": "3",  # 3 = High impact only
+    }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.9",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.myfxbook.com/forex-economic-calendar",
+        "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":      "application/json",
+        "Referer":     "https://www.fxstreet.com/economic-calendar",
     }
 
     fetch_ok = False
     all_events = []
     try:
-        session = req_lib.Session()
-        # Obtener cookies visitando la página principal
-        session.get("https://www.myfxbook.com/forex-economic-calendar", headers={
-            "User-Agent": headers["User-Agent"],
-        }, timeout=15)
-
-        params = {
-            "start": target_date.strftime("%Y-%m-%d"),
-            "end":   end_date.strftime("%Y-%m-%d"),
-        }
-        resp = session.get(
-            "https://www.myfxbook.com/forex-economic-calendar-impl.json",
-            params=params, headers=headers, timeout=20
-        )
+        resp = req_lib.get(url, params=params, headers=headers, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("error"):
-            raise ValueError(f"Myfxbook error: {data}")
+        raw_events = resp.json()
         fetch_ok = True
-
-        raw_events = data.get("calendar", [])
-        logger.info(f"Myfxbook calendar: {len(raw_events)} eventos, impact values: {set(e.get('impact') for e in raw_events[:30])}")
+        logger.info(f"FXStreet calendar: {len(raw_events)} eventos alto impacto")
 
         for ev in raw_events:
-            # impact: 3=High, 2=Medium, 1=Low
-            if int(ev.get("impact", 0)) < 3:
-                continue
-            currency = ev.get("currency", "").upper()
+            currency = ev.get("currencyCode", "").upper()
             if currency not in _FOREX_CURRENCIES:
                 continue
 
-            date_str = ev.get("date", "")
-            time_str = ev.get("time", "")
+            date_str = ev.get("dateUtc", "") or ev.get("date", "")
             try:
-                if time_str and time_str not in ("Tentative", "All Day", ""):
-                    dt_utc = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
-                else:
-                    dt_utc = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=pytz.utc)
+                dt_utc = datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc)
             except Exception:
                 continue
             dt_mx = dt_utc.astimezone(mx_tz)
@@ -3129,16 +3113,16 @@ def _fetch_forex_news_sync(target_date=None, days=1):
             sort_key = dt_mx.toordinal() * 1440 + dt_mx.hour * 60 + dt_mx.minute
 
             all_events.append({
-                "title":    ev.get("title", "").strip(),
+                "title":    ev.get("name", ev.get("title", "")).strip(),
                 "country":  currency,
                 "hora_mx":  hora_mx,
-                "forecast": str(ev.get("forecast") or ""),
+                "forecast": str(ev.get("consensus") or ev.get("forecast") or ""),
                 "previous": str(ev.get("previous") or ""),
                 "sort_key": sort_key,
             })
 
     except Exception as e:
-        logger.warning(f"Myfxbook calendar fetch error: {e}")
+        logger.warning(f"FXStreet calendar fetch error: {e}")
 
     all_events.sort(key=lambda x: x['sort_key'])
     return all_events, fetch_ok
