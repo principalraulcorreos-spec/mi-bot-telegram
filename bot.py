@@ -292,9 +292,6 @@ def finanzas_keyboard():
             InlineKeyboardButton("⚖️ Balance actual",    callback_data='fin_balance'),
             InlineKeyboardButton("🔄 Movimientos",       callback_data='fin_movimientos'),
         ],
-        [
-            InlineKeyboardButton("💰 Dividir capital",   callback_data='fin_capital'),
-        ],
         [_volver()[0]],
     ])
 
@@ -339,8 +336,8 @@ def reportes_keyboard():
             InlineKeyboardButton("📊 Reporte mensual",   callback_data='rep_mensual'),
         ],
         [
-            InlineKeyboardButton("📚 Reflexiones",       callback_data='rep_reflexiones'),
-            InlineKeyboardButton("💰 Historial capital", callback_data='rep_capital'),
+            InlineKeyboardButton("💪 Hábitos del mes",   callback_data='rep_habitos'),
+            InlineKeyboardButton("📈 Trading del mes",   callback_data='rep_trading'),
         ],
         [_volver()[0]],
     ])
@@ -1405,9 +1402,14 @@ def mostrar_ingresos_mes():
         lineas += f"\\- *{escape_md(t.capitalize())}*: ${v:,.0f}\n"
     detalle = ""
     for i in sorted(ingresos, key=lambda x: x["fecha"], reverse=True)[:15]:
-        fuente = "📧" if i.get("descripcion") else "✍️"
-        desc   = escape_md(i.get("descripcion", "")[:40])
-        detalle += f"{fuente} {escape_md(i['fecha'][:10])}: *${i['cantidad']:,.0f}* _{escape_md(i.get('tipo','otro'))}_ {desc}\n"
+        fuente   = "📧" if i.get("descripcion") else "✍️"
+        desc_raw = i.get("descripcion", "")[:40]
+        tipo_raw = i.get("tipo", "otro") or "otro"
+        monto    = escape_md(f"${i['cantidad']:,.0f}")
+        fecha    = escape_md(i['fecha'][:10])
+        tipo_esc = escape_md(tipo_raw)
+        desc_esc = f" \\- {escape_md(desc_raw)}" if desc_raw else ""
+        detalle += f"{fuente} {fecha}: *{monto}* _{tipo_esc}_{desc_esc}\n"
     return (
         f"📥 *INGRESOS — {mes_esc}*\n"
         f"━━━━━━━━━━━━━━━\n\n"
@@ -1496,6 +1498,53 @@ def mostrar_stats_trading():
         f"━━━━━━━━━━━━━━━\n\n"
         f"📅 *{mes_esc}*\n{_stats(trades_mes, 'Este mes')}\n"
         f"📊 *Histórico total*\n{_stats(trades_todo, 'Total')}"
+    )
+
+def generar_habitos_mes():
+    now    = datetime.now(TIMEZONE)
+    mes_esc = escape_md(now.strftime('%B %Y').capitalize())
+    stats  = get_stats_habs()
+    total  = stats.get("total_dias", 0)
+    if total == 0:
+        return (
+            f"💪 *HÁBITOS — {mes_esc}*\n\n"
+            "_Sin check\\-ins registrados este mes\\._\n\n"
+            "_El check\\-in diario es a las 9pm\\._"
+        )
+    gym     = stats.get("gym", 0)
+    comida  = stats.get("comida_casa", 0)
+    trading = stats.get("trading_plan", 0)
+    gym_pct    = round(gym / total * 100)
+    comida_pct = round(comida / total * 100)
+    trd_pct    = round(trading / total * 100)
+    gym_icon  = "✅" if gym_pct >= 80 else "⚠️" if gym_pct >= 50 else "🔴"
+    com_icon  = "✅" if comida_pct >= 80 else "⚠️" if comida_pct >= 50 else "🔴"
+    trd_icon  = "✅" if trd_pct >= 80 else "⚠️" if trd_pct >= 50 else "🔴"
+    streaks = get_streaks()
+    streak_lines = ""
+    for clave, label in HABITOS:
+        s = streaks.get(clave, 0)
+        short = label.split("¿")[-1].rstrip("?").strip() if "¿" in label else label
+        if s >= 2:
+            streak_lines += f"  🔥 {escape_md(short)}: {s} días seguidos\n"
+    # Detalle ultimos 7 dias
+    hab7 = sorted(get_habitos_dias(7), key=lambda h: h["fecha"])
+    detalle = ""
+    for h in hab7:
+        fecha = escape_md(h["fecha"][5:])
+        g = "✅" if h["respuestas"].get("gym") else "❌"
+        c = "✅" if h["respuestas"].get("comida_casa") else "❌"
+        t = "✅" if h["respuestas"].get("trading_plan") else "❌"
+        detalle += f"  {fecha}: Gym {g} Comida {c} Trading {t}\n"
+    return (
+        f"💪 *HÁBITOS — {mes_esc}*\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"Check\\-ins registrados: *{total} días*\n\n"
+        f"{gym_icon} *Gym:* {gym}/{total} días \\({gym_pct}%\\)\n"
+        f"{com_icon} *Comida en casa:* {comida}/{total} días \\({comida_pct}%\\)\n"
+        f"{trd_icon} *Trading según plan:* {trading}/{total} días \\({trd_pct}%\\)\n"
+        f"{('━━━━━━━━━━━━━━━\n' + streak_lines) if streak_lines else ''}\n"
+        f"*Últimos 7 días:*\n{detalle if detalle else '  _Sin datos_'}"
     )
 
 # ------------------------------------
@@ -2389,15 +2438,7 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
-    # 2. Esperando respuesta de capital
-    if get_esperando() == 'capital':
-        guardar_registro('capital', text)
-        fecha = escape_md(datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M"))
-        await update.message.reply_text(
-            f"✅ *División de capital guardada\\.*\n\n_{frase_aleatoria()}_\n\n⏰ _{fecha}_",
-            parse_mode='MarkdownV2', reply_markup=menu_keyboard()
-        )
-        return
+    # 2. (capital flow removed)
 
     # 3. Patrón rápido de gasto: "gasto 150 comida"
     m = GASTO_RE.match(text.strip())
@@ -2582,12 +2623,10 @@ async def cmd_mensual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await enviar_pregunta(context.bot, update.effective_chat.id, 'mensual', 0)
 
 async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_esperando('capital')
-    await update.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
+    await update.message.reply_text(mostrar_balance_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_esperando('capital')
-    await update.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
+    await update.message.reply_text("✅ Bot activo\\.", parse_mode='MarkdownV2')
 
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_all_flows()
@@ -2802,8 +2841,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(mostrar_movimientos_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
 
     elif data == 'fin_capital':
-        set_esperando('capital')
-        await query.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
+        # Redirige al balance — el bot lleva el registro automáticamente
+        await query.message.reply_text(mostrar_balance_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
 
     # ── MÓDULO TRADING ───────────────────────────────────────────
     elif data == 'mod_trading':
@@ -2932,15 +2971,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
 
-    elif data == 'rep_reflexiones':
-        todos = load_data().get("registros", [])
-        semanales = [r for r in todos if r['tipo'] == 'semanal']
-        await query.message.reply_text(mostrar_registros(semanales, "Reflexiones semanales"), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+    elif data == 'rep_habitos':
+        await query.message.reply_text(generar_habitos_mes(), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
 
-    elif data == 'rep_capital':
-        todos = load_data().get("registros", [])
-        caps  = [r for r in todos if r['tipo'] == 'capital']
-        await query.message.reply_text(mostrar_registros(caps, "Divisiones de capital"), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+    elif data == 'rep_trading':
+        await query.message.reply_text(mostrar_stats_trading(), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
 
     # ── HISTORIAL LEGACY ──────────────────────────────────────────
     elif data == 'historial':
@@ -3380,8 +3415,11 @@ async def job_capital(context: ContextTypes.DEFAULT_TYPE):
     if dia_hoy() == 1:
         chat_id = get_chat_id()
         if chat_id:
-            set_esperando('capital')
-            await context.bot.send_message(chat_id, CAPITAL, parse_mode='MarkdownV2')
+            await context.bot.send_message(
+                chat_id,
+                mostrar_balance_mes(),
+                parse_mode='MarkdownV2',
+            )
 
 async def job_pedir_informe(context: ContextTypes.DEFAULT_TYPE):
     if dia_hoy() == 30:
