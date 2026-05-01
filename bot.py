@@ -85,6 +85,31 @@ EMOCIONES_TRADE = [
 ]
 
 # ------------------------------------
+# SALUD & FITNESS
+# ------------------------------------
+
+RUTINA_LMV = [
+    ("Calentamiento",    "10-15 min cardio suave (caminata/bici)"),
+    ("Pecho & Triceps",  "Press plano 4x10 | Fondos 3x12 | Extensiones 3x15"),
+    ("Espalda & Biceps", "Jalones 4x10 | Remo 3x12 | Curl 3x15"),
+    ("Pierna",           "Sentadilla 4x10 | Prensa 3x12 | Extensiones 3x15"),
+    ("Core",             "Plancha 3x45s | Abdominales 3x20"),
+    ("Enfriamiento",     "10 min stretching completo"),
+]
+
+# Ultimo sabado de corte: 2026-04-25 (cada 2 semanas = sabados alternos)
+CORTE_CABELLO_BASE = "2026-04-25"
+
+META_PASOS_DIARIO = 8000
+META_CAL_BASE     = 2000  # se actualiza automático con el peso
+
+def _calcular_meta_calorias(peso_kg: float) -> int:
+    """Mifflin-St Jeor para hombre activo (actividad moderada)."""
+    # Asume: hombre, 25 años, 175 cm, actividad moderada (x1.55)
+    tmb = 10 * peso_kg + 6.25 * 175 - 5 * 25 + 5
+    return round(tmb * 1.55)
+
+# ------------------------------------
 # FRASES MOTIVACIONALES
 # ------------------------------------
 
@@ -323,13 +348,16 @@ def load_data():
         data.setdefault("trade_pending", None)
         data.setdefault("trade_fotos", [])
         data.setdefault("recordatorios", [])
+        data.setdefault("pasos", [])       # [{fecha, valor}]
+        data.setdefault("calorias", [])    # [{fecha, valor}]
+        data.setdefault("meta_calorias", META_CAL_BASE)
         return data
     return {
         "registros": [], "chat_id": None, "flow": None, "esperando": None,
         "gastos": [], "habitos": [], "habito_flow": None,
         "ai_history": [], "ai_last_message": None, "pending_action": None,
         "trades": [], "notas": [], "trade_pending": None, "trade_fotos": [],
-        "recordatorios": [],
+        "recordatorios": [], "pasos": [], "calorias": [], "meta_calorias": META_CAL_BASE,
     }
 
 def save_data(data):
@@ -609,6 +637,53 @@ def clear_all_flows():
     save_data(data)
 
 # ------------------------------------
+# SALUD — PASOS / CALORÍAS
+# ------------------------------------
+
+def registrar_pasos(valor: int):
+    data = load_data()
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    data["pasos"] = [p for p in data.get("pasos", []) if p["fecha"] != fecha]
+    data["pasos"].append({"fecha": fecha, "valor": int(valor)})
+    data["pasos"].sort(key=lambda x: x["fecha"])
+    save_data(data)
+
+def registrar_calorias(valor: int):
+    data = load_data()
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    data["calorias"] = [c for c in data.get("calorias", []) if c["fecha"] != fecha]
+    data["calorias"].append({"fecha": fecha, "valor": int(valor)})
+    data["calorias"].sort(key=lambda x: x["fecha"])
+    save_data(data)
+
+def get_salud_hoy() -> dict:
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    data  = load_data()
+    pasos = next((p["valor"] for p in reversed(data.get("pasos", [])) if p["fecha"] == fecha), None)
+    cal   = next((c["valor"] for c in reversed(data.get("calorias", [])) if c["fecha"] == fecha), None)
+    pesos = data.get("peso", [])
+    ultimo_peso = pesos[-1]["valor"] if pesos else None
+    meta_cal = data.get("meta_calorias", META_CAL_BASE)
+    return {"pasos": pasos, "calorias": cal, "peso": ultimo_peso, "meta_calorias": meta_cal}
+
+def get_salud_semana() -> dict:
+    cutoff = (datetime.now(TIMEZONE) - timedelta(days=6)).strftime("%Y-%m-%d")
+    data   = load_data()
+    pasos_sem  = [p for p in data.get("pasos", []) if p["fecha"] >= cutoff]
+    cal_sem    = [c for c in data.get("calorias", []) if c["fecha"] >= cutoff]
+    avg_pasos  = round(sum(p["valor"] for p in pasos_sem) / len(pasos_sem)) if pasos_sem else None
+    avg_cal    = round(sum(c["valor"] for c in cal_sem) / len(cal_sem)) if cal_sem else None
+    return {"avg_pasos": avg_pasos, "avg_calorias": avg_cal,
+            "dias_pasos": len(pasos_sem), "dias_calorias": len(cal_sem)}
+
+def es_semana_corte() -> bool:
+    """True si este sábado le toca corte (cada 2 semanas desde la base)."""
+    base = datetime.strptime(CORTE_CABELLO_BASE, "%Y-%m-%d").date()
+    hoy  = datetime.now(TIMEZONE).date()
+    diff = (hoy - base).days
+    return diff >= 0 and (diff // 7) % 2 == 0
+
+# ------------------------------------
 # SOFÍA — MODO PSICÓLOGA
 # ------------------------------------
 
@@ -741,13 +816,66 @@ def generar_resumen_semanal():
             f"\\- R total: {escape_md(f'{total_r:+.2f}R')}\n"
         )
 
+    # Salud de la semana
+    sem_salud = get_salud_semana()
+    salud_lines = ""
+    if sem_salud["avg_pasos"]:
+        pct_pasos = round(sem_salud["avg_pasos"] / META_PASOS_DIARIO * 100)
+        icon_p = "✅" if pct_pasos >= 80 else "⚠️"
+        salud_lines += f"\\- {icon_p} Pasos prom: {sem_salud['avg_pasos']:,}/día \\({pct_pasos}% meta\\)\n"
+    if sem_salud["avg_calorias"]:
+        salud_lines += f"\\- 🔥 Cal quemadas prom: {sem_salud['avg_calorias']} kcal/día\n"
+    if salud_lines:
+        salud_section = f"\n💪 *Salud \\(Samsung Watch\\)*\n{salud_lines}"
+    else:
+        salud_section = ""
+
+    # Próxima semana en el calendario
+    try:
+        eventos_7 = _listar_eventos_sync(days_ahead=7)
+        if eventos_7:
+            # Detectar días cargados (>2 eventos)
+            from collections import Counter
+            dias_count = Counter()
+            for e in eventos_7:
+                try:
+                    dia = e['inicio'][:10]
+                    dias_count[dia] += 1
+                except Exception:
+                    pass
+            dias_cargados = [d for d, n in dias_count.items() if n >= 2]
+            cal_lines = ""
+            for e in eventos_7[:5]:
+                try:
+                    if 'T' in e['inicio']:
+                        dt = datetime.fromisoformat(e['inicio'].replace('Z', '+00:00')).astimezone(TIMEZONE)
+                        when = dt.strftime('%a %d %H:%M')
+                    else:
+                        when = e['inicio']
+                    cal_lines += f"\\- {escape_md(when)}: {escape_md(e['titulo'])}\n"
+                except Exception:
+                    pass
+            if len(eventos_7) > 5:
+                cal_lines += f"\\- _\\.\\.\\. y {len(eventos_7)-5} eventos más_\n"
+            carga_txt = ""
+            if dias_cargados:
+                dias_fmt = ", ".join(escape_md(d) for d in dias_cargados[:3])
+                carga_txt = f"⚠️ _Días cargados: {dias_fmt}_\n"
+            agenda_section = f"\n📅 *Próxima semana \\(calendario\\)*\n{cal_lines}{carga_txt}"
+        else:
+            agenda_section = ""
+    except Exception:
+        agenda_section = ""
+
     return (
         "📊 *RAÚL — RESUMEN DE LA SEMANA*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💪 *Hábitos \\(últimos 7 días\\)*\n{habitos_lines}"
+        f"{salud_section}"
         f"{trades_lines}\n"
         f"💰 *Gastos de la semana*\n{gastos_lines}"
-        f"Total: ${total_g:.0f}\n\n"
+        f"Total: ${total_g:.0f}\n"
+        f"{agenda_section}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "_Ahora responde honestamente\\. ¿Cómo fue la semana?_ 👇"
     )
@@ -843,6 +971,32 @@ def generar_como_voy():
         f"💸 *Gastos de {mes_esc}*\n{gastos_lines}\n"
         f"*Total gastado: ${total_gastado:.0f} / ${sum(PRESUPUESTO.values())}*"
     )
+
+def _build_salud_mensual(año: int, mes: int) -> str:
+    """Sección salud para el reporte mensual."""
+    prefix = f"{año:04d}-{mes:02d}"
+    data   = load_data()
+    pasos_mes = [p for p in data.get("pasos", []) if p["fecha"].startswith(prefix)]
+    cal_mes   = [c for c in data.get("calorias", []) if c["fecha"].startswith(prefix)]
+    pesos     = data.get("peso", [])
+
+    if not pasos_mes and not cal_mes:
+        return ""
+
+    lines = ["💚 *SALUD & FITNESS*\n"]
+    if pasos_mes:
+        avg_p = round(sum(p["valor"] for p in pasos_mes) / len(pasos_mes))
+        dias_meta = sum(1 for p in pasos_mes if p["valor"] >= META_PASOS_DIARIO)
+        icon_p = "✅" if avg_p >= META_PASOS_DIARIO * 0.8 else "⚠️"
+        lines.append(f"  {icon_p} Pasos: promedio {avg_p:,}/día \\| días con meta: {dias_meta}\n")
+    if cal_mes:
+        avg_c = round(sum(c["valor"] for c in cal_mes) / len(cal_mes))
+        lines.append(f"  🔥 Calorías quemadas: {avg_c} kcal/día promedio\n")
+    if pesos:
+        ultimo = pesos[-1]["valor"]
+        lines.append(f"  ⚖️ Peso actual: {ultimo:.1f} kg \\| Meta cal: {data.get('meta_calorias', META_CAL_BASE)} kcal/día\n")
+    lines.append("\n")
+    return "".join(lines)
 
 def generar_reporte_global_mensual(año=None, mes=None):
     """Reporte completo del mes: finanzas + hábitos + fotos + coach."""
@@ -979,6 +1133,8 @@ def generar_reporte_global_mensual(año=None, mes=None):
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📸 *ARCHIVO*\n"
         f"  Fotos guardadas este mes: {len(fotos_mes)}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{_build_salud_mensual(año, mes)}"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🧠 *OBSERVACIONES DEL COACH*\n"
         f"{obs_text}\n\n"
@@ -1163,6 +1319,18 @@ def mostrar_notas(notas):
 # IA — GROQ CHAT
 # ------------------------------------
 
+def _build_salud_context() -> str:
+    s = get_salud_hoy()
+    lines = []
+    if s["peso"]:
+        lines.append(f"  Peso: {s['peso']:.1f} kg | Meta calorías: {s['meta_calorias']} kcal/día")
+    pasos_txt = f"{s['pasos']:,}" if s["pasos"] else "no registrado"
+    cal_txt   = f"{s['calorias']} kcal" if s["calorias"] else "no registrado"
+    meta_p    = META_PASOS_DIARIO
+    pasos_pct = f" ({round(s['pasos']/meta_p*100)}% meta)" if s["pasos"] else ""
+    lines.append(f"  Pasos hoy: {pasos_txt}{pasos_pct} | Calorías quemadas: {cal_txt}")
+    return "\n".join(lines) if lines else "  Sin datos de salud hoy."
+
 def build_system_prompt():
     now         = datetime.now(TIMEZONE)
     data        = load_data()
@@ -1282,6 +1450,9 @@ AGENDA 48H:
 ALERTAS DEL COACH:
 {coach_str}
 
+SALUD HOY (Samsung Watch):
+{_build_salud_context()}
+
 INSTRUCCIONES COMO COACH:
 - Habla de tú, español mexicano, informal pero directo con carácter
 - Eres SU asistente — conoces su vida, sus metas, sus puntos débiles
@@ -1290,6 +1461,8 @@ INSTRUCCIONES COMO COACH:
 - Conecta lo que dice con su contexto (trading, fe, abuelo, Nallelita, disciplina)
 - NUNCA cuestiones lo que Raúl dice de su vida personal. Acéptalo y ayúdalo.
 - Antes de registrar algo importante, puedes hacer UNA pregunta inteligente para clarificar
+- Horario scalper: lunes a viernes 7-10am. Análisis semanal: viernes 12:45-1:30pm.
+- Rutina gym: lunes, miércoles y viernes.
 
 DETECCIÓN DE ACCIONES — incluye al final (línea separada) si aplica:
 
@@ -1312,6 +1485,12 @@ ACCION_CAL_VER:[dias]
 
 Si quiere CREAR evento:
 ACCION_CAL_CREAR:[titulo]|[YYYY-MM-DD]|[HH:MM]|[duracion_minutos]
+
+Si detecta pasos del día (Samsung Watch o manual):
+ACCION_PASOS:[numero_entero]
+
+Si detecta calorías quemadas del día:
+ACCION_CALORIAS:[numero_entero]
 
 Si necesitas UNA pregunta de clarificación ANTES de registrar algo (solo para info importante/ambigua):
 ACCION_RAZONAR:[pregunta concreta y específica]
@@ -1391,6 +1570,18 @@ def parse_ai_response(text: str):
             pregunta = line[len('ACCION_RAZONAR:'):].strip()
             if pregunta:
                 action = {"type": "razonar", "pregunta": pregunta}
+        elif line.startswith('ACCION_PASOS:'):
+            val_str = line[len('ACCION_PASOS:'):].strip()
+            try:
+                action = {"type": "pasos", "valor": int(float(val_str))}
+            except Exception:
+                clean.append(line)
+        elif line.startswith('ACCION_CALORIAS:'):
+            val_str = line[len('ACCION_CALORIAS:'):].strip()
+            try:
+                action = {"type": "calorias", "valor": int(float(val_str))}
+            except Exception:
+                clean.append(line)
         else:
             clean.append(line)
     return '\n'.join(clean).strip(), action
@@ -1519,6 +1710,23 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             resp = f"✅ *{titulo_esc}* agendado para _{fecha_esc}_"
         else:
             resp = "No pude crear el evento. Verifica que el calendario esté conectado."
+        if message_text:
+            await update.message.reply_text(message_text)
+        await update.message.reply_text(resp, parse_mode='MarkdownV2')
+    elif action and action["type"] == "pasos":
+        registrar_pasos(action["valor"])
+        meta_pct = round(action["valor"] / META_PASOS_DIARIO * 100)
+        icon = "✅" if action["valor"] >= META_PASOS_DIARIO else "⚡"
+        resp = f"{icon} *{action['valor']:,} pasos registrados* \\({meta_pct}% de la meta\\)"
+        if message_text:
+            await update.message.reply_text(message_text)
+        await update.message.reply_text(resp, parse_mode='MarkdownV2')
+    elif action and action["type"] == "calorias":
+        registrar_calorias(action["valor"])
+        data_sal = load_data()
+        meta_c = data_sal.get("meta_calorias", META_CAL_BASE)
+        icon = "🔥" if action["valor"] >= meta_c * 0.3 else "⚡"
+        resp = f"{icon} *{action['valor']} kcal quemadas* registradas"
         if message_text:
             await update.message.reply_text(message_text)
         await update.message.reply_text(resp, parse_mode='MarkdownV2')
@@ -1894,6 +2102,48 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 await update.message.reply_text(texto, parse_mode='MarkdownV2')
                 return
         except (ValueError, AttributeError):
+            pass
+
+    # 3.7b. Detección natural de pasos (Samsung Watch)
+    _pasos_match = re.search(
+        r'(?:hice|caminé|camine|llevo|registra?|tuve?)\s+(\d[\d,.]*)\s*pasos?'
+        r'|(\d[\d,.]*)\s*pasos?\s+(?:hoy|del\s+día|diarios?)',
+        _tl
+    )
+    if _pasos_match:
+        raw = (_pasos_match.group(1) or _pasos_match.group(2) or "").replace(',', '').replace('.', '')
+        try:
+            val = int(raw)
+            if 100 <= val <= 100000:
+                registrar_pasos(val)
+                meta_pct = round(val / META_PASOS_DIARIO * 100)
+                icon = "✅" if val >= META_PASOS_DIARIO else "⚡"
+                await update.message.reply_text(
+                    f"{icon} *{val:,} pasos* registrados \\({meta_pct}% de la meta diaria\\)",
+                    parse_mode='MarkdownV2'
+                )
+                return
+        except (ValueError, TypeError):
+            pass
+
+    # 3.7c. Detección natural de calorías quemadas (Samsung Watch)
+    _cal_match = re.search(
+        r'(?:quemé|queme|quemaste|burns?|burned?)\s+(\d[\d,.]*)\s*(?:cal(?:orías?|orias?)?|kcal)'
+        r'|(\d[\d,.]*)\s*(?:cal(?:orías?|orias?)?|kcal)\s+quemad',
+        _tl
+    )
+    if _cal_match:
+        raw = (_cal_match.group(1) or _cal_match.group(2) or "").replace(',', '')
+        try:
+            val = int(float(raw))
+            if 50 <= val <= 10000:
+                registrar_calorias(val)
+                await update.message.reply_text(
+                    f"🔥 *{val} kcal quemadas* registradas",
+                    parse_mode='MarkdownV2'
+                )
+                return
+        except (ValueError, TypeError):
             pass
 
     # 3.7. Detección natural de recordatorios / alarmas
@@ -3365,9 +3615,78 @@ async def cmd_peso(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["peso"] = [p for p in d["peso"] if p["fecha"] != fecha]
     d["peso"].append({"fecha": fecha, "valor": valor})
     d["peso"].sort(key=lambda x: x["fecha"])
+    # Auto-update calorie target
+    nueva_meta = _calcular_meta_calorias(valor)
+    meta_anterior = d.get("meta_calorias", META_CAL_BASE)
+    d["meta_calorias"] = nueva_meta
     save_data(d)
     texto = _formato_peso(d["peso"])
     await update.message.reply_text(texto, parse_mode='MarkdownV2')
+    if nueva_meta != meta_anterior:
+        await update.message.reply_text(
+            f"⚡ *Meta de calorías actualizada:* {nueva_meta} kcal/día",
+            parse_mode='MarkdownV2'
+        )
+
+
+async def cmd_salud(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dashboard de salud: peso + pasos + calorías."""
+    s = get_salud_hoy()
+    sem = get_salud_semana()
+    d = load_data()
+    pesos = d.get("peso", [])
+    peso_txt = f"{s['peso']:.1f} kg" if s["peso"] else "no registrado"
+    meta_cal = s["meta_calorias"]
+
+    pasos_hoy = f"{s['pasos']:,}" if s["pasos"] else "—"
+    cal_hoy   = f"{s['calorias']} kcal" if s["calorias"] else "—"
+    pasos_pct = f" \\({round(s['pasos']/META_PASOS_DIARIO*100)}%\\)" if s["pasos"] else ""
+    cal_pct   = ""
+
+    avg_p = f"{sem['avg_pasos']:,}" if sem["avg_pasos"] else "—"
+    avg_c = f"{sem['avg_calorias']} kcal" if sem["avg_calorias"] else "—"
+
+    # Tendencia peso
+    trend = ""
+    if len(pesos) >= 2:
+        diff = pesos[-1]["valor"] - pesos[0]["valor"]
+        trend = f"\n  Tendencia: {'▼' if diff < 0 else '▲'} {abs(diff):.1f} kg vs inicio"
+
+    texto = (
+        "💪 *SALUD & FITNESS — HOY*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        f"⚖️ *Peso:* {escape_md(peso_txt)}{escape_md(trend)}\n"
+        f"  Meta calorías: {meta_cal} kcal/día\n\n"
+        f"👟 *Pasos:* {escape_md(pasos_hoy)}{pasos_pct}\n"
+        f"  Meta: {META_PASOS_DIARIO:,} pasos/día\n\n"
+        f"🔥 *Calorías quemadas:* {escape_md(cal_hoy)}{escape_md(cal_pct)}\n\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"📊 *Promedio últimos 7 días:*\n"
+        f"  Pasos: {escape_md(avg_p)} \\({sem['dias_pasos']} días con datos\\)\n"
+        f"  Calorías: {escape_md(avg_c)}\n\n"
+        "_Registra vía: 'hice 8000 pasos' o 'quemé 350 cal'_"
+    )
+    await update.message.reply_text(texto, parse_mode='MarkdownV2')
+
+
+async def cmd_rutina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra la rutina de entrenamiento L/M/V."""
+    hoy = datetime.now(TIMEZONE).weekday()
+    dias_gym = {0: "LUNES", 2: "MIÉRCOLES", 4: "VIERNES"}
+    dia_gym = dias_gym.get(hoy)
+    if dia_gym:
+        header = f"🏋️ *RUTINA DE HOY — {dia_gym}*\n"
+    else:
+        proximo = min((d for d in dias_gym if d > hoy), default=0)
+        header = f"🏋️ *RUTINA PRÓXIMO DÍA \\(L/M/V\\)*\n"
+
+    lineas = ["━━━━━━━━━━━━━━━\n"]
+    for titulo, desc in RUTINA_LMV:
+        lineas.append(f"*{escape_md(titulo)}*\n_{escape_md(desc)}_\n")
+    lineas.append("━━━━━━━━━━━━━━━")
+    lineas.append("_Horario scalper: lunes a viernes 7\\-10am_")
+    lineas.append("_Análisis semanal: viernes 12:45\\-1:30pm_")
+    await update.message.reply_text(header + "\n".join(lineas), parse_mode='MarkdownV2')
 
 
 # ------------------------------------
@@ -3392,6 +3711,63 @@ async def job_backup_semanal(context: ContextTypes.DEFAULT_TYPE):
             filename=f"registro_backup_{fecha}.json",
             caption=f"💾 Backup semanal — {fecha}"
         )
+
+
+# ------------------------------------
+# JOBS — TRADING & SALUD
+# ------------------------------------
+
+async def job_aviso_scalper(context: ContextTypes.DEFAULT_TYPE):
+    """Lun-Vie 6:45am — aviso sesión scalper 7-10am."""
+    hoy = datetime.now(TIMEZONE).weekday()
+    if hoy > 4:  # sábado o domingo
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    await context.bot.send_message(
+        chat_id,
+        "📈 *SESIÓN SCALPER — 7:00am*\n\n"
+        "Tienes 15 minutos para prepararte\\.\n"
+        "Horario: 7:00 \\- 10:00am\n\n"
+        "_Respira\\. Estrategia\\. Sin apuro\\._",
+        parse_mode='MarkdownV2'
+    )
+
+
+async def job_aviso_analisis_semanal(context: ContextTypes.DEFAULT_TYPE):
+    """Viernes 12:30pm — aviso análisis de temporalidad 12:45-1:30pm."""
+    if datetime.now(TIMEZONE).weekday() != 4:  # solo viernes
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    await context.bot.send_message(
+        chat_id,
+        "🔭 *ANÁLISIS SEMANAL — 12:45pm*\n\n"
+        "En 15 minutos: análisis de temporalidad\\.\n"
+        "Índices, acciones y mercado en general\\.\n"
+        "Duración: 45 min \\(12:45 \\- 1:30pm\\)\n\n"
+        "_Prepara tu setup\\. Es tu ventaja del fin de semana\\._",
+        parse_mode='MarkdownV2'
+    )
+
+
+async def job_aviso_corte_cabello(context: ContextTypes.DEFAULT_TYPE):
+    """Sábados — avisa si le toca corte cada 2 semanas."""
+    if datetime.now(TIMEZONE).weekday() != 5:  # solo sábado
+        return
+    if not es_semana_corte():
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    await context.bot.send_message(
+        chat_id,
+        "✂️ *HOY TOCA CORTE DE CABELLO*\n\n"
+        "_Semana sí — agenda tu cita hoy\\._",
+        parse_mode='MarkdownV2'
+    )
 
 
 # ------------------------------------
@@ -3610,6 +3986,8 @@ def main():
     app.add_handler(CommandHandler("reporte_mes",  cmd_reporte_mes))
     app.add_handler(CommandHandler("reporte_anual", cmd_reporte_anual))
     app.add_handler(CommandHandler("peso",          cmd_peso))
+    app.add_handler(CommandHandler("salud",         cmd_salud))
+    app.add_handler(CommandHandler("rutina",        cmd_rutina))
     app.add_handler(CommandHandler("recordatorio",  cmd_recordatorio))
     app.add_handler(CommandHandler("borrar_rec",    cmd_borrar_rec))
     app.add_handler(CommandHandler("test",      cmd_test))
@@ -3641,6 +4019,12 @@ def main():
     jq.run_daily(job_backup_semanal, time=dt_time(21, 0, tzinfo=mx), name="backup")
     # Recordatorios: revisar cada minuto
     jq.run_repeating(job_check_recordatorios, interval=60, first=10, name="recordatorios")
+    # Scalper: aviso lun-vie 6:45am
+    jq.run_daily(job_aviso_scalper, time=dt_time(6, 45, tzinfo=mx), name="scalper")
+    # Análisis semanal: viernes 12:30pm
+    jq.run_daily(job_aviso_analisis_semanal, time=dt_time(12, 30, tzinfo=mx), name="analisis_semanal")
+    # Corte de cabello: sábados 9am (verifica si es la semana)
+    jq.run_daily(job_aviso_corte_cabello, time=dt_time(9, 0, tzinfo=mx), name="corte_cabello")
 
     # Recordatorio del reloj (miércoles 2026-04-30 10am) — solo si no existe
     _data = load_data()
