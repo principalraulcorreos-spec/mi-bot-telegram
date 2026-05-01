@@ -2771,17 +2771,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now(TIMEZONE)
         ingresos = get_ingresos_mes()
         gastos   = get_gastos_mes()
-        ti = sum(i["cantidad"] for i in ingresos)
-        tg = sum(g["cantidad"] for g in gastos)
+        ti  = sum(i["cantidad"] for i in ingresos)
+        tg  = sum(g["cantidad"] for g in gastos)
         bal = ti - tg
-        icon = "✅" if bal >= 0 else "🔴"
+        icon    = "✅" if bal >= 0 else "🔴"
         mes_esc = escape_md(now.strftime('%B').capitalize())
+        ti_esc  = escape_md(f"${ti:,.0f}")
+        tg_esc  = escape_md(f"${tg:,.0f}")
+        bal_esc = escape_md(f"${bal:+,.0f}")
         resumen = (
             f"💰 *FINANZAS — {mes_esc}*\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"📥 Ingresos: *${ti:,.0f}*\n"
-            f"💸 Gastos:   *${tg:,.0f}*\n"
-            f"{icon} Balance:  *${bal:+,.0f}*\n\n"
+            f"📥 Ingresos: *{ti_esc}*\n"
+            f"💸 Gastos:   *{tg_esc}*\n"
+            f"{icon} Balance:  *{bal_esc}*\n\n"
             f"¿Qué quieres ver?"
         )
         await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
@@ -2809,10 +2812,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                       if t.get("fecha_entrada", "")[:7] == datetime.now(TIMEZONE).strftime("%Y-%m")]
         cerrados = [t for t in trades_mes if t.get("fecha_salida")]
         abierto  = get_open_trade()
+        abierto_txt = escape_md("Sí — " + abierto.get('par','?')) if abierto else "Ninguno"
         resumen  = (
-            f"📈 *TRADING*\n━━━━━━━━━━━━━━━\n"
+            f"📈 *TRADING*\n"
+            f"━━━━━━━━━━━━━━━\n"
             f"Trades este mes: {len(cerrados)} cerrados\n"
-            f"Trade abierto: {'Sí — ' + escape_md(abierto.get('par','?')) if abierto else 'Ninguno'}\n\n"
+            f"Trade abierto: {abierto_txt}\n\n"
             f"¿Qué quieres ver?"
         )
         await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=trading_keyboard())
@@ -2823,51 +2828,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── MÓDULO SALUD ─────────────────────────────────────────────
     elif data == 'mod_salud':
         s = get_salud_hoy()
-        peso_txt = f"{s['peso']:.1f} kg" if s["peso"] else "no registrado"
-        pasos_txt = f"{s['pasos']:,}" if s["pasos"] else "—"
-        cal_txt   = f"{s['calorias']} kcal" if s["calorias"] else "—"
+        peso_txt  = escape_md(f"{s['peso']:.1f} kg" if s["peso"] else "no registrado")
+        pasos_txt = escape_md(f"{s['pasos']:,}" if s["pasos"] else "sin datos")
+        cal_txt   = escape_md(f"{s['calorias']} kcal" if s["calorias"] else "sin datos")
         resumen = (
-            f"💪 *SALUD HOY*\n━━━━━━━━━━━━━━━\n"
-            f"⚖️ Peso: *{escape_md(peso_txt)}*\n"
-            f"👟 Pasos: *{escape_md(pasos_txt)}*\n"
-            f"🔥 Calorías quemadas: *{escape_md(cal_txt)}*\n\n"
+            f"💪 *SALUD HOY*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"⚖️ Peso: *{peso_txt}*\n"
+            f"👟 Pasos: *{pasos_txt}*\n"
+            f"🔥 Calorías quemadas: *{cal_txt}*\n\n"
             f"¿Qué quieres ver?"
         )
         await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
 
     elif data == 'sal_dashboard':
-        from telegram.ext import ContextTypes as _CT
-        class _FakeUpdate:
-            class _msg:
-                @staticmethod
-                async def reply_text(*a, **kw): pass
-            message = _msg
         d2 = load_data()
-        s = get_salud_hoy()
+        s   = get_salud_hoy()
         sem = get_salud_semana()
         pesos = d2.get("peso", [])
-        peso_txt  = f"{s['peso']:.1f} kg" if s["peso"] else "no registrado"
+        peso_txt  = escape_md(f"{s['peso']:.1f} kg" if s["peso"] else "no registrado")
         meta_cal  = s["meta_calorias"]
-        pasos_hoy = f"{s['pasos']:,}" if s["pasos"] else "—"
-        cal_hoy   = f"{s['calorias']} kcal" if s["calorias"] else "—"
+        pasos_hoy = escape_md(f"{s['pasos']:,}" if s["pasos"] else "sin datos")
+        cal_hoy   = escape_md(f"{s['calorias']} kcal" if s["calorias"] else "sin datos")
         pasos_pct = f" \\({round(s['pasos']/META_PASOS_DIARIO*100)}%\\)" if s["pasos"] else ""
-        avg_p = f"{sem['avg_pasos']:,}" if sem["avg_pasos"] else "—"
-        avg_c = f"{sem['avg_calorias']} kcal" if sem["avg_calorias"] else "—"
+        avg_p = escape_md(f"{sem['avg_pasos']:,}" if sem["avg_pasos"] else "sin datos")
+        avg_c = escape_md(f"{sem['avg_calorias']} kcal" if sem["avg_calorias"] else "sin datos")
         trend = ""
         if len(pesos) >= 2:
             diff = pesos[-1]["valor"] - pesos[0]["valor"]
-            trend = f"\n  Tendencia: {'▼' if diff < 0 else '▲'} {abs(diff):.1f} kg"
+            signo = "▼" if diff < 0 else "▲"
+            trend = f"\n  Tendencia: {escape_md(signo + f' {abs(diff):.1f} kg')}"
         texto = (
-            "💪 *SALUD & FITNESS — HOY*\n━━━━━━━━━━━━━━━\n\n"
-            f"⚖️ *Peso:* {escape_md(peso_txt)}{escape_md(trend)}\n"
+            "💪 *SALUD & FITNESS HOY*\n━━━━━━━━━━━━━━━\n\n"
+            f"⚖️ *Peso:* {peso_txt}{trend}\n"
             f"  Meta calorías: {meta_cal} kcal/día\n\n"
-            f"👟 *Pasos:* {escape_md(pasos_hoy)}{pasos_pct}\n"
+            f"👟 *Pasos:* {pasos_hoy}{pasos_pct}\n"
             f"  Meta: {META_PASOS_DIARIO:,} pasos/día\n\n"
-            f"🔥 *Calorías quemadas:* {escape_md(cal_hoy)}\n\n"
+            f"🔥 *Calorías quemadas:* {cal_hoy}\n\n"
             "━━━━━━━━━━━━━━━\n"
             f"📊 *Promedio 7 días:*\n"
-            f"  Pasos: {escape_md(avg_p)} \\({sem['dias_pasos']} días\\)\n"
-            f"  Calorías: {escape_md(avg_c)}"
+            f"  Pasos: {avg_p} \\({sem['dias_pasos']} días\\)\n"
+            f"  Calorías: {avg_c}"
         )
         await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
 
@@ -2889,9 +2890,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for f in fechas:
                 p_val = next((p["valor"] for p in pasos if p["fecha"] == f), None)
                 c_val = next((c["valor"] for c in cals  if c["fecha"] == f), None)
-                p_txt = f"{p_val:,}" if p_val else "—"
-                c_txt = f"{c_val}" if c_val else "—"
-                lineas += f"  {f[5:]}: 👟{escape_md(p_txt)} pasos \\| 🔥{escape_md(c_txt)} kcal\n"
+                p_txt = escape_md(f"{p_val:,}") if p_val else "sin datos"
+                c_txt = escape_md(str(c_val)) if c_val else "sin datos"
+                fecha_esc = escape_md(f[5:])  # MM-DD tiene guión especial
+                lineas += f"  {fecha_esc}: {p_txt} pasos \\| {c_txt} kcal\n"
             texto = lineas
         await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
 
