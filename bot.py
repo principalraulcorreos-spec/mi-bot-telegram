@@ -260,25 +260,93 @@ ENVIAR_INFORME = (
 # ------------------------------------
 
 def menu_keyboard():
+    """Menú principal — 6 módulos + Sofía."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("💰 División de Capital", callback_data='capital'),
-            InlineKeyboardButton("📚 Historial",           callback_data='historial'),
+            InlineKeyboardButton("💰 Finanzas",   callback_data='mod_finanzas'),
+            InlineKeyboardButton("📈 Trading",    callback_data='mod_trading'),
         ],
         [
-            InlineKeyboardButton("💸 Gastos del Mes",  callback_data='gastos'),
-            InlineKeyboardButton("🎯 ¿Cómo voy?",      callback_data='como_voy'),
+            InlineKeyboardButton("💪 Salud",      callback_data='mod_salud'),
+            InlineKeyboardButton("📅 Agenda",     callback_data='mod_agenda'),
         ],
         [
-            InlineKeyboardButton("📸 Mis Trades",  callback_data='fotos_trades'),
-            InlineKeyboardButton("📝 Notas",        callback_data='notas'),
+            InlineKeyboardButton("📊 Reportes",   callback_data='mod_reportes'),
+            InlineKeyboardButton("📝 Notas",      callback_data='notas'),
         ],
         [
             InlineKeyboardButton("🧠 Hablar con Sofía", callback_data='sofia_modo'),
         ],
     ])
 
+def _volver():
+    return [InlineKeyboardButton("⬅️ Menú principal", callback_data='menu')]
+
+def finanzas_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📥 Ingresos del mes",  callback_data='fin_ingresos'),
+            InlineKeyboardButton("💸 Gastos del mes",    callback_data='fin_gastos'),
+        ],
+        [
+            InlineKeyboardButton("⚖️ Balance actual",    callback_data='fin_balance'),
+            InlineKeyboardButton("🔄 Movimientos",       callback_data='fin_movimientos'),
+        ],
+        [
+            InlineKeyboardButton("💰 Dividir capital",   callback_data='fin_capital'),
+        ],
+        [_volver()[0]],
+    ])
+
+def trading_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📋 Ver trades",        callback_data='trades'),
+            InlineKeyboardButton("📸 Fotos de trades",   callback_data='fotos_trades'),
+        ],
+        [
+            InlineKeyboardButton("🎯 Estadísticas",      callback_data='trd_stats'),
+        ],
+        [_volver()[0]],
+    ])
+
+def salud_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏥 Dashboard hoy",     callback_data='sal_dashboard'),
+            InlineKeyboardButton("⚖️ Peso",              callback_data='sal_peso'),
+        ],
+        [
+            InlineKeyboardButton("👟 Pasos/Calorías",    callback_data='sal_pasos'),
+            InlineKeyboardButton("🏋️ Rutina L/M/V",     callback_data='sal_rutina'),
+        ],
+        [_volver()[0]],
+    ])
+
+def agenda_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📅 Ver agenda 7 días", callback_data='age_ver'),
+            InlineKeyboardButton("🗓️ Agenda de hoy",     callback_data='age_hoy'),
+        ],
+        [_volver()[0]],
+    ])
+
+def reportes_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎯 ¿Cómo voy?",        callback_data='como_voy'),
+            InlineKeyboardButton("📊 Reporte mensual",   callback_data='rep_mensual'),
+        ],
+        [
+            InlineKeyboardButton("📚 Reflexiones",       callback_data='rep_reflexiones'),
+            InlineKeyboardButton("💰 Historial capital", callback_data='rep_capital'),
+        ],
+        [_volver()[0]],
+    ])
+
 def historial_keyboard():
+    """Legacy — mantenido por si se llama desde algún comando."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📊 Semanales", callback_data='hist_semanal'),
@@ -288,7 +356,7 @@ def historial_keyboard():
             InlineKeyboardButton("💰 Capital",   callback_data='hist_capital'),
             InlineKeyboardButton("📋 Todo",      callback_data='hist_todo'),
         ],
-        [InlineKeyboardButton("⬅️ Volver al menú", callback_data='menu')],
+        [_volver()[0]],
     ])
 
 def habito_keyboard():
@@ -1315,6 +1383,120 @@ def mostrar_notas(notas):
         nota  = escape_md(n.get("texto", ""))
         texto += f"📅 _{fecha}_\n{nota}\n\n"
     return texto
+
+def mostrar_ingresos_mes():
+    now = datetime.now(TIMEZONE)
+    ingresos = get_ingresos_mes()
+    mes_esc  = escape_md(now.strftime('%B %Y').capitalize())
+    if not ingresos:
+        return (
+            f"📥 *Ingresos — {mes_esc}*\n\n"
+            "_Sin ingresos registrados\\._\n\n"
+            "_Escribe:_ `ingrese 8000 renta`\n"
+            "_O usa Gmail — detecta depósitos automáticamente\\._"
+        )
+    total = sum(i["cantidad"] for i in ingresos)
+    por_tipo = {}
+    for i in ingresos:
+        t = i.get("tipo") or "otro"
+        por_tipo[t] = por_tipo.get(t, 0) + i["cantidad"]
+    lineas = ""
+    for t, v in sorted(por_tipo.items(), key=lambda x: -x[1]):
+        lineas += f"\\- *{escape_md(t.capitalize())}*: ${v:,.0f}\n"
+    detalle = ""
+    for i in sorted(ingresos, key=lambda x: x["fecha"], reverse=True)[:15]:
+        fuente = "📧" if i.get("descripcion") else "✍️"
+        desc   = escape_md(i.get("descripcion", "")[:40])
+        detalle += f"{fuente} {escape_md(i['fecha'][:10])}: *${i['cantidad']:,.0f}* _{escape_md(i.get('tipo','otro'))}_ {desc}\n"
+    return (
+        f"📥 *INGRESOS — {mes_esc}*\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"*Total: ${total:,.0f}*\n\n"
+        f"Por tipo:\n{lineas}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"Detalle \\(últimos 15\\):\n{detalle}"
+    )
+
+def mostrar_balance_mes():
+    now = datetime.now(TIMEZONE)
+    mes_esc     = escape_md(now.strftime('%B %Y').capitalize())
+    ingresos    = get_ingresos_mes()
+    gastos      = get_gastos_mes()
+    movimientos = get_movimientos_mes()
+    ti = sum(i["cantidad"] for i in ingresos)
+    tg = sum(g["cantidad"] for g in gastos)
+    tm = sum(m["cantidad"] for m in movimientos)
+    balance = ti - tg
+    icon    = "✅" if balance >= 0 else "🔴"
+    bal_esc = escape_md(f"${balance:+,.0f}")
+    # Gastos por categoría
+    cat = {}
+    for g in gastos:
+        c = g.get("categoria") or "otros"
+        cat[c] = cat.get(c, 0) + g["cantidad"]
+    cat_lines = ""
+    for c, v in sorted(cat.items(), key=lambda x: -x[1]):
+        presup = PRESUPUESTO.get(c)
+        pct_txt = f" \\({v/presup*100:.0f}%\\)" if presup else ""
+        warn    = " ⚠️" if presup and v > presup else ""
+        cat_lines += f"  \\- {escape_md(c.capitalize())}: ${v:,.0f}{pct_txt}{escape_md(warn)}\n"
+    mov_line = f"\n🔄 Movimientos entre cuentas: ${tm:,.0f}\n" if tm else ""
+    return (
+        f"⚖️ *BALANCE — {mes_esc}*\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📥 Ingresos:  *${ti:,.0f}*\n"
+        f"💸 Gastos:    *${tg:,.0f}*\n"
+        f"{mov_line}"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{icon} Balance: *{bal_esc}*\n\n"
+        f"Gastos por categoría:\n{cat_lines if cat_lines else '  _Sin gastos aún_'}"
+    )
+
+def mostrar_movimientos_mes():
+    now  = datetime.now(TIMEZONE)
+    movs = get_movimientos_mes()
+    mes_esc = escape_md(now.strftime('%B %Y').capitalize())
+    if not movs:
+        return (
+            f"🔄 *Movimientos — {mes_esc}*\n\n"
+            "_Sin movimientos entre cuentas\\._\n\n"
+            "_Ejemplo:_ `moví 2000 a CETES`"
+        )
+    total = sum(m["cantidad"] for m in movs)
+    lineas = ""
+    for m in sorted(movs, key=lambda x: x["fecha"], reverse=True)[:15]:
+        desc = escape_md(m.get("descripcion", "")[:50])
+        lineas += f"\\- {escape_md(m['fecha'][:10])}: *${m['cantidad']:,.0f}* — _{desc}_\n"
+    return (
+        f"🔄 *MOVIMIENTOS — {mes_esc}*\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"Total movido: *${total:,.0f}*\n\n"
+        f"{lineas}"
+    )
+
+def mostrar_stats_trading():
+    data = load_data()
+    now  = datetime.now(TIMEZONE)
+    trades_mes = [t for t in data.get("trades", [])
+                  if t.get("fecha_entrada", "")[:7] == now.strftime("%Y-%m") and t.get("fecha_salida")]
+    trades_todo = [t for t in data.get("trades", []) if t.get("fecha_salida")]
+    def _stats(trades, label):
+        if not trades:
+            return f"  {label}: sin datos\n"
+        wins = sum(1 for t in trades if (t.get("resultado_r") or 0) > 0)
+        rs   = [t["resultado_r"] for t in trades if t.get("resultado_r") is not None]
+        wr   = round(wins / len(trades) * 100) if trades else 0
+        return (
+            f"  {label}: {len(trades)} trades \\| WR: {wr}% \\({wins}/{len(trades)}\\)\n"
+            f"  R acumulado: {escape_md(f'{sum(rs):+.2f}R') if rs else '?'}\n"
+        )
+    mes_esc = escape_md(now.strftime('%B %Y').capitalize())
+    return (
+        f"🎯 *ESTADÍSTICAS TRADING*\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📅 *{mes_esc}*\n{_stats(trades_mes, 'Este mes')}\n"
+        f"📊 *Histórico total*\n{_stats(trades_todo, 'Total')}"
+    )
 
 # ------------------------------------
 # IA — GROQ CHAT
@@ -2370,18 +2552,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "✅ *Bot activado*\n\n"
-        "Escríbeme directamente o usa el menú\\.\n\n"
-        "• Para gastos rápidos: `gasto 150 comida`\n"
-        "• Para trades: manda cualquier foto y se guarda automáticamente\n"
-        "• Para tickets: manda foto con caption `ticket` o `gasto`\n\n"
-        "/capital \\— División de capital\n"
-        "/gastos \\— Resumen gastos del mes\n"
-        "/como\\_voy \\— Snapshot general\n"
-        "/trades \\— Historial de trades\n"
-        "/fotos\\_trades \\— Ver fotos de trades por fecha\n"
-        "/notas \\— Ver notas guardadas\n"
-        "/historial \\— Ver registros\n"
-        "/cancelar \\— Cancelar flujo activo",
+        "Usa el menú de abajo o escríbeme directo\\.\n\n"
+        "━━━━━━━━━━━━━━━\n"
+        "💰 *Finanzas* → ingresos, gastos, balance, capital\n"
+        "📈 *Trading* → trades, fotos, estadísticas\n"
+        "💪 *Salud* → peso, pasos, calorías, rutina\n"
+        "📅 *Agenda* → Google Calendar\n"
+        "📊 *Reportes* → resúmenes y reflexiones\n"
+        "📝 *Notas* → notas guardadas\n"
+        "🧠 *Sofía* → psicóloga IA\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "Atajos rápidos:\n"
+        "`gasto 150 comida` \\— registrar gasto\n"
+        "`hice 8000 pasos` \\— registrar pasos\n"
+        "`peso 79` \\— registrar peso\n"
+        "_Manda foto_ \\— se guarda como trade o ticket",
         parse_mode='MarkdownV2', reply_markup=menu_keyboard()
     )
 
@@ -2576,10 +2761,186 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == 'capital':
+    # ── MENÚ PRINCIPAL ──────────────────────────────────────────
+    if data == 'menu':
+        await query.message.reply_text("📋 *Menú principal*", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+        return
+
+    # ── MÓDULO FINANZAS ──────────────────────────────────────────
+    elif data == 'mod_finanzas':
+        now = datetime.now(TIMEZONE)
+        ingresos = get_ingresos_mes()
+        gastos   = get_gastos_mes()
+        ti = sum(i["cantidad"] for i in ingresos)
+        tg = sum(g["cantidad"] for g in gastos)
+        bal = ti - tg
+        icon = "✅" if bal >= 0 else "🔴"
+        mes_esc = escape_md(now.strftime('%B').capitalize())
+        resumen = (
+            f"💰 *FINANZAS — {mes_esc}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📥 Ingresos: *${ti:,.0f}*\n"
+            f"💸 Gastos:   *${tg:,.0f}*\n"
+            f"{icon} Balance:  *${bal:+,.0f}*\n\n"
+            f"¿Qué quieres ver?"
+        )
+        await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
+
+    elif data == 'fin_ingresos':
+        await query.message.reply_text(mostrar_ingresos_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
+
+    elif data == 'fin_gastos':
+        await query.message.reply_text(generar_resumen_gastos(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
+
+    elif data == 'fin_balance':
+        await query.message.reply_text(mostrar_balance_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
+
+    elif data == 'fin_movimientos':
+        await query.message.reply_text(mostrar_movimientos_mes(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
+
+    elif data == 'fin_capital':
         set_esperando('capital')
         await query.message.reply_text(CAPITAL, parse_mode='MarkdownV2')
 
+    # ── MÓDULO TRADING ───────────────────────────────────────────
+    elif data == 'mod_trading':
+        data2 = load_data()
+        trades_mes = [t for t in data2.get("trades", [])
+                      if t.get("fecha_entrada", "")[:7] == datetime.now(TIMEZONE).strftime("%Y-%m")]
+        cerrados = [t for t in trades_mes if t.get("fecha_salida")]
+        abierto  = get_open_trade()
+        resumen  = (
+            f"📈 *TRADING*\n━━━━━━━━━━━━━━━\n"
+            f"Trades este mes: {len(cerrados)} cerrados\n"
+            f"Trade abierto: {'Sí — ' + escape_md(abierto.get('par','?')) if abierto else 'Ninguno'}\n\n"
+            f"¿Qué quieres ver?"
+        )
+        await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=trading_keyboard())
+
+    elif data == 'trd_stats':
+        await query.message.reply_text(mostrar_stats_trading(), parse_mode='MarkdownV2', reply_markup=trading_keyboard())
+
+    # ── MÓDULO SALUD ─────────────────────────────────────────────
+    elif data == 'mod_salud':
+        s = get_salud_hoy()
+        peso_txt = f"{s['peso']:.1f} kg" if s["peso"] else "no registrado"
+        pasos_txt = f"{s['pasos']:,}" if s["pasos"] else "—"
+        cal_txt   = f"{s['calorias']} kcal" if s["calorias"] else "—"
+        resumen = (
+            f"💪 *SALUD HOY*\n━━━━━━━━━━━━━━━\n"
+            f"⚖️ Peso: *{escape_md(peso_txt)}*\n"
+            f"👟 Pasos: *{escape_md(pasos_txt)}*\n"
+            f"🔥 Calorías quemadas: *{escape_md(cal_txt)}*\n\n"
+            f"¿Qué quieres ver?"
+        )
+        await query.message.reply_text(resumen, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
+
+    elif data == 'sal_dashboard':
+        from telegram.ext import ContextTypes as _CT
+        class _FakeUpdate:
+            class _msg:
+                @staticmethod
+                async def reply_text(*a, **kw): pass
+            message = _msg
+        d2 = load_data()
+        s = get_salud_hoy()
+        sem = get_salud_semana()
+        pesos = d2.get("peso", [])
+        peso_txt  = f"{s['peso']:.1f} kg" if s["peso"] else "no registrado"
+        meta_cal  = s["meta_calorias"]
+        pasos_hoy = f"{s['pasos']:,}" if s["pasos"] else "—"
+        cal_hoy   = f"{s['calorias']} kcal" if s["calorias"] else "—"
+        pasos_pct = f" \\({round(s['pasos']/META_PASOS_DIARIO*100)}%\\)" if s["pasos"] else ""
+        avg_p = f"{sem['avg_pasos']:,}" if sem["avg_pasos"] else "—"
+        avg_c = f"{sem['avg_calorias']} kcal" if sem["avg_calorias"] else "—"
+        trend = ""
+        if len(pesos) >= 2:
+            diff = pesos[-1]["valor"] - pesos[0]["valor"]
+            trend = f"\n  Tendencia: {'▼' if diff < 0 else '▲'} {abs(diff):.1f} kg"
+        texto = (
+            "💪 *SALUD & FITNESS — HOY*\n━━━━━━━━━━━━━━━\n\n"
+            f"⚖️ *Peso:* {escape_md(peso_txt)}{escape_md(trend)}\n"
+            f"  Meta calorías: {meta_cal} kcal/día\n\n"
+            f"👟 *Pasos:* {escape_md(pasos_hoy)}{pasos_pct}\n"
+            f"  Meta: {META_PASOS_DIARIO:,} pasos/día\n\n"
+            f"🔥 *Calorías quemadas:* {escape_md(cal_hoy)}\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"📊 *Promedio 7 días:*\n"
+            f"  Pasos: {escape_md(avg_p)} \\({sem['dias_pasos']} días\\)\n"
+            f"  Calorías: {escape_md(avg_c)}"
+        )
+        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
+
+    elif data == 'sal_peso':
+        d2 = load_data()
+        texto = _formato_peso(d2.get("peso", []))
+        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
+
+    elif data == 'sal_pasos':
+        d2    = load_data()
+        cutoff= (datetime.now(TIMEZONE) - timedelta(days=6)).strftime("%Y-%m-%d")
+        pasos = [p for p in d2.get("pasos", []) if p["fecha"] >= cutoff]
+        cals  = [c for c in d2.get("calorias", []) if c["fecha"] >= cutoff]
+        if not pasos and not cals:
+            texto = "Sin datos de pasos o calorías esta semana\\.\n\nRegistra con: _'hice 8000 pasos'_ o _'quemé 350 cal'_"
+        else:
+            lineas = "📅 *Últimos 7 días:*\n"
+            fechas = sorted(set(p["fecha"] for p in pasos) | set(c["fecha"] for c in cals))
+            for f in fechas:
+                p_val = next((p["valor"] for p in pasos if p["fecha"] == f), None)
+                c_val = next((c["valor"] for c in cals  if c["fecha"] == f), None)
+                p_txt = f"{p_val:,}" if p_val else "—"
+                c_txt = f"{c_val}" if c_val else "—"
+                lineas += f"  {f[5:]}: 👟{escape_md(p_txt)} pasos \\| 🔥{escape_md(c_txt)} kcal\n"
+            texto = lineas
+        await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=salud_keyboard())
+
+    elif data == 'sal_rutina':
+        hoy = datetime.now(TIMEZONE).weekday()
+        dias_gym = {0: "LUNES", 2: "MIÉRCOLES", 4: "VIERNES"}
+        dia_gym = dias_gym.get(hoy)
+        header = f"🏋️ *HOY ES DÍA DE GYM — {escape_md(dia_gym)}*\n" if dia_gym else "🏋️ *RUTINA L/M/V*\n"
+        lineas = ["━━━━━━━━━━━━━━━\n"]
+        for titulo, desc in RUTINA_LMV:
+            lineas.append(f"*{escape_md(titulo)}*\n_{escape_md(desc)}_\n")
+        await query.message.reply_text(header + "\n".join(lineas), parse_mode='MarkdownV2', reply_markup=salud_keyboard())
+
+    # ── MÓDULO AGENDA ─────────────────────────────────────────────
+    elif data == 'mod_agenda':
+        await query.message.reply_text("📅 *Agenda*\n¿Qué quieres ver?", parse_mode='MarkdownV2', reply_markup=agenda_keyboard())
+
+    elif data == 'age_ver':
+        eventos = await asyncio.to_thread(_listar_eventos_sync, 7)
+        await query.message.reply_text(formatear_eventos(eventos), parse_mode='MarkdownV2', reply_markup=agenda_keyboard())
+
+    elif data == 'age_hoy':
+        eventos = await asyncio.to_thread(_listar_eventos_sync, 1)
+        await query.message.reply_text(formatear_eventos(eventos), parse_mode='MarkdownV2', reply_markup=agenda_keyboard())
+
+    # ── MÓDULO REPORTES ───────────────────────────────────────────
+    elif data == 'mod_reportes':
+        await query.message.reply_text("📊 *Reportes*\n¿Qué quieres ver?", parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+
+    elif data == 'rep_mensual':
+        texto = generar_reporte_global_mensual()
+        # Partir si es largo
+        if len(texto) > 4000:
+            await query.message.reply_text(texto[:4000], parse_mode='MarkdownV2')
+            await query.message.reply_text(texto[4000:], parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+        else:
+            await query.message.reply_text(texto, parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+
+    elif data == 'rep_reflexiones':
+        todos = load_data().get("registros", [])
+        semanales = [r for r in todos if r['tipo'] == 'semanal']
+        await query.message.reply_text(mostrar_registros(semanales, "Reflexiones semanales"), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+
+    elif data == 'rep_capital':
+        todos = load_data().get("registros", [])
+        caps  = [r for r in todos if r['tipo'] == 'capital']
+        await query.message.reply_text(mostrar_registros(caps, "Divisiones de capital"), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
+
+    # ── HISTORIAL LEGACY ──────────────────────────────────────────
     elif data == 'historial':
         await query.message.reply_text("📚 *Historial — ¿Qué categoría?*", parse_mode='MarkdownV2', reply_markup=historial_keyboard())
 
@@ -2594,11 +2955,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filtrados, titulo = mapping[data]
         await query.message.reply_text(mostrar_registros(filtrados, titulo), parse_mode='MarkdownV2', reply_markup=historial_keyboard())
 
+    # ── OTROS (gastos/como_voy legacy) ────────────────────────────
     elif data == 'gastos':
-        await query.message.reply_text(generar_resumen_gastos(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+        await query.message.reply_text(generar_resumen_gastos(), parse_mode='MarkdownV2', reply_markup=finanzas_keyboard())
 
     elif data == 'como_voy':
-        await query.message.reply_text(generar_como_voy(), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
+        await query.message.reply_text(generar_como_voy(), parse_mode='MarkdownV2', reply_markup=reportes_keyboard())
 
     elif data == 'trades':
         trades = load_data().get("trades", [])
@@ -2641,9 +3003,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'notas':
         notas = load_data().get("notas", [])
         await query.message.reply_text(mostrar_notas(notas), parse_mode='MarkdownV2', reply_markup=menu_keyboard())
-
-    elif data == 'menu':
-        await query.message.reply_text("📋 *¿Qué quieres hacer?*", parse_mode='MarkdownV2', reply_markup=menu_keyboard())
 
     elif data == 'sofia_modo':
         set_sofia_mode(True)
