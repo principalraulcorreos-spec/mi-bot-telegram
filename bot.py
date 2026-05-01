@@ -1320,6 +1320,153 @@ def mostrar_notas(notas):
 # IA — GROQ CHAT
 # ------------------------------------
 
+def _build_historial_compacto() -> str:
+    """Resumen compacto de los últimos 3 meses para dar contexto histórico a la IA."""
+    now  = datetime.now(TIMEZONE)
+    data = load_data()
+    lines = []
+
+    # --- Últimos 3 meses: totales por mes ---
+    import calendar as _cal
+    for delta in range(2, -1, -1):  # mes-2, mes-1, mes actual
+        m = now.month - delta
+        y = now.year
+        while m <= 0:
+            m += 12; y -= 1
+        nombre = _cal.month_abbr[m]
+        gastos_m   = get_gastos_mes(y, m)
+        ingresos_m = get_ingresos_mes(y, m)
+        tg = sum(g["cantidad"] for g in gastos_m)
+        ti = sum(i["cantidad"] for i in ingresos_m)
+        if tg or ti:
+            lines.append(f"  {nombre} {y}: ingresos=${ti:.0f} gastos=${tg:.0f} balance=${ti-tg:+.0f}")
+
+    # --- Hábitos últimos 30 días ---
+    cutoff30 = (now - timedelta(days=29)).strftime("%Y-%m-%d")
+    hab30 = [h for h in data.get("habitos", []) if h["fecha"] >= cutoff30]
+    if hab30:
+        gym30      = sum(1 for h in hab30 if h["respuestas"].get("gym"))
+        comida30   = sum(1 for h in hab30 if h["respuestas"].get("comida_casa"))
+        trading30  = sum(1 for h in hab30 if h["respuestas"].get("trading_plan"))
+        lines.append(f"  Hábitos últimos 30 días ({len(hab30)} registros): gym={gym30} comida_casa={comida30} trading_plan={trading30}")
+
+    # --- Hábitos últimos 7 días (detalle) ---
+    cutoff7 = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+    hab7 = [h for h in data.get("habitos", []) if h["fecha"] >= cutoff7]
+    if hab7:
+        detalle = []
+        for h in sorted(hab7, key=lambda x: x["fecha"]):
+            d_str = h["fecha"][5:]  # MM-DD
+            gym_ok = "G" if h["respuestas"].get("gym") else "-"
+            com_ok = "C" if h["respuestas"].get("comida_casa") else "-"
+            tra_ok = "T" if h["respuestas"].get("trading_plan") else "-"
+            detalle.append(f"{d_str}:{gym_ok}{com_ok}{tra_ok}")
+        lines.append(f"  Hábitos 7d (G=gym C=comida T=trading): {' '.join(detalle)}")
+
+    # --- Trades últimos 30 días ---
+    trades30 = [t for t in data.get("trades", [])
+                if t.get("fecha_entrada", "") >= cutoff30 and t.get("fecha_salida")]
+    if trades30:
+        wins = sum(1 for t in trades30 if (t.get("resultado_r") or 0) > 0)
+        rs   = [t["resultado_r"] for t in trades30 if t.get("resultado_r") is not None]
+        lines.append(f"  Trades 30d: {len(trades30)} operaciones | {wins} ganadoras | R acum={sum(rs):+.2f}")
+
+    # --- Gastos por categoría últimos 30 días ---
+    gastos30 = [g for g in data.get("gastos", []) if g["fecha"][:10] >= cutoff30]
+    if gastos30:
+        cat30 = {}
+        for g in gastos30:
+            cat30[g["categoria"]] = cat30.get(g["categoria"], 0) + g["cantidad"]
+        cat_str = " | ".join(f"{k}=${v:.0f}" for k, v in sorted(cat30.items(), key=lambda x: -x[1]))
+        lines.append(f"  Gastos 30d por categoría: {cat_str}")
+
+    # --- Ingresos últimos 30 días ---
+    ingresos30 = [i for i in data.get("ingresos", []) if i["fecha"][:10] >= cutoff30]
+    if ingresos30:
+        ti30 = sum(i["cantidad"] for i in ingresos30)
+        tipos = {}
+        for i in ingresos30:
+            tipos[i.get("tipo", "otro")] = tipos.get(i.get("tipo", "otro"), 0) + i["cantidad"]
+        tipos_str = " | ".join(f"{k}=${v:.0f}" for k, v in tipos.items())
+        lines.append(f"  Ingresos 30d: ${ti30:.0f} ({tipos_str})")
+
+    # --- Peso últimos registros ---
+    pesos = data.get("peso", [])[-5:]
+    if pesos:
+        peso_str = " → ".join(f"{p['fecha'][5:]}: {p['valor']:.1f}kg" for p in pesos)
+        lines.append(f"  Peso reciente: {peso_str}")
+
+    return "\n".join(lines) if lines else "  Sin historial disponible."
+
+
+def _consultar_rango(modulo: str, fecha_ini: str, fecha_fin: str) -> str:
+    """Extrae datos de un módulo en un rango de fechas y los devuelve como texto para la IA."""
+    data = load_data()
+    lines = [f"DATOS CONSULTADOS — {modulo.upper()} ({fecha_ini} → {fecha_fin}):"]
+
+    if modulo in ("gastos", "finanzas", "todo"):
+        gastos = [g for g in data.get("gastos", [])
+                  if fecha_ini <= g["fecha"][:10] <= fecha_fin]
+        total = sum(g["cantidad"] for g in gastos)
+        cat = {}
+        for g in gastos:
+            cat[g["categoria"]] = cat.get(g["categoria"], 0) + g["cantidad"]
+        lines.append(f"  Gastos: ${total:.0f} en {len(gastos)} movimientos")
+        for k, v in sorted(cat.items(), key=lambda x: -x[1]):
+            lines.append(f"    {k}: ${v:.0f}")
+        for g in sorted(gastos, key=lambda x: x["fecha"])[-20:]:
+            lines.append(f"    {g['fecha'][:10]}: ${g['cantidad']:.0f} {g.get('categoria','')} {g.get('descripcion','')[:40]}")
+
+    if modulo in ("ingresos", "finanzas", "todo"):
+        ingresos = [i for i in data.get("ingresos", [])
+                    if fecha_ini <= i["fecha"][:10] <= fecha_fin]
+        total_i = sum(i["cantidad"] for i in ingresos)
+        lines.append(f"  Ingresos: ${total_i:.0f} en {len(ingresos)} movimientos")
+        for i in sorted(ingresos, key=lambda x: x["fecha"]):
+            lines.append(f"    {i['fecha'][:10]}: ${i['cantidad']:.0f} ({i.get('tipo','')} {i.get('descripcion','')[:40]})")
+
+    if modulo in ("habitos", "todo"):
+        habitos = [h for h in data.get("habitos", [])
+                   if fecha_ini <= h["fecha"] <= fecha_fin]
+        gym = sum(1 for h in habitos if h["respuestas"].get("gym"))
+        comida = sum(1 for h in habitos if h["respuestas"].get("comida_casa"))
+        trading = sum(1 for h in habitos if h["respuestas"].get("trading_plan"))
+        lines.append(f"  Hábitos: {len(habitos)} registros | gym={gym} | comida_casa={comida} | trading_plan={trading}")
+        for h in sorted(habitos, key=lambda x: x["fecha"]):
+            r = h["respuestas"]
+            gym_s = "✓" if r.get("gym") else "✗"
+            com_s = "✓" if r.get("comida_casa") else "✗"
+            tra_s = "✓" if r.get("trading_plan") else "✗"
+            lines.append(f"    {h['fecha']}: gym={gym_s} comida={com_s} trading={tra_s}")
+
+    if modulo in ("trades", "todo"):
+        trades = [t for t in data.get("trades", [])
+                  if fecha_ini <= t.get("fecha_entrada", "")[:10] <= fecha_fin
+                  and t.get("fecha_salida")]
+        wins = sum(1 for t in trades if (t.get("resultado_r") or 0) > 0)
+        rs   = [t["resultado_r"] for t in trades if t.get("resultado_r") is not None]
+        lines.append(f"  Trades: {len(trades)} | wins={wins} | R acum={sum(rs):+.2f}")
+        for t in sorted(trades, key=lambda x: x.get("fecha_entrada", "")):
+            r = t.get("resultado_r")
+            lines.append(f"    {t.get('fecha_entrada','')[:10]}: {t.get('par','?')} {t.get('direccion','?')} {f'{r:+.2f}R' if r else '?'} emo={t.get('emocion','?')}")
+
+    if modulo in ("peso", "salud", "todo"):
+        pesos = [p for p in data.get("peso", []) if fecha_ini <= p["fecha"] <= fecha_fin]
+        if pesos:
+            lines.append(f"  Peso: {len(pesos)} registros")
+            for p in pesos:
+                lines.append(f"    {p['fecha']}: {p['valor']:.1f} kg")
+        pasos = [p for p in data.get("pasos", []) if fecha_ini <= p["fecha"] <= fecha_fin]
+        if pasos:
+            avg = round(sum(p["valor"] for p in pasos) / len(pasos))
+            lines.append(f"  Pasos: promedio {avg:,}/día ({len(pasos)} días registrados)")
+
+    if len(lines) == 1:
+        lines.append("  Sin datos en ese rango.")
+
+    return "\n".join(lines)
+
+
 def _build_salud_context() -> str:
     s = get_salud_hoy()
     lines = []
@@ -1408,6 +1555,8 @@ def build_system_prompt():
 
     coach_str = "\n".join(coach_alerts) if coach_alerts else "  Sin alertas activas."
 
+    historial_compacto = _build_historial_compacto()
+
     return f"""Eres el asistente personal de Raúl — su coach de vida, entrenador y checador de plenitud integrado en Telegram.
 
 PERFIL DE RAÚL:
@@ -1421,6 +1570,9 @@ PERFIL DE RAÚL:
 
 CONTEXTO ACTUAL ({now.strftime('%d/%m/%Y %H:%M')} Ciudad de México):
 - Semanas de retroalimentación: {num_semanas}
+
+HISTORIAL COMPACTO (últimos 3 meses + detalle 30 días):
+{historial_compacto}
 
 FINANZAS DEL MES:
 - Gastos por categoría: {json.dumps(gastos_por_cat, ensure_ascii=False) if gastos_por_cat else 'ninguno'}
@@ -1493,8 +1645,18 @@ ACCION_PASOS:[numero_entero]
 Si detecta calorías quemadas del día:
 ACCION_CALORIAS:[numero_entero]
 
+Si el usuario pregunta por datos de un rango de fechas específico que NO tienes disponible (ej: "del 5 al 20 de marzo", "la primera semana de abril"):
+ACCION_CONSULTA:[modulo]:[YYYY-MM-DD]:[YYYY-MM-DD]
+Módulos: gastos | ingresos | finanzas | habitos | trades | peso | salud | todo
+
 Si necesitas UNA pregunta de clarificación ANTES de registrar algo (solo para info importante/ambigua):
 ACCION_RAZONAR:[pregunta concreta y específica]
+
+IMPORTANTE — razonamiento con datos:
+- Ya tienes el historial compacto de los últimos 3 meses en el prompt.
+- Si preguntan de "esta semana", "hoy", "este mes" o "últimos 30 días" — responde directamente con los datos que ya tienes.
+- Solo usa ACCION_CONSULTA cuando necesites datos de un rango específico que no está en el historial compacto.
+- Puedes responder preguntas como "¿hice gym esta semana?", "¿cuánto gasté en comida?", "¿cuál fue mi mejor semana?" directamente con los datos del historial.
 
 Solo incluye UNA acción por respuesta y solo si estás muy seguro."""
 
@@ -1571,6 +1733,11 @@ def parse_ai_response(text: str):
             pregunta = line[len('ACCION_RAZONAR:'):].strip()
             if pregunta:
                 action = {"type": "razonar", "pregunta": pregunta}
+        elif line.startswith('ACCION_CONSULTA:'):
+            partes = line[len('ACCION_CONSULTA:'):].strip().split(':')
+            if len(partes) >= 3:
+                action = {"type": "consulta", "modulo": partes[0].strip(),
+                          "fecha_ini": partes[1].strip(), "fecha_fin": partes[2].strip()}
         elif line.startswith('ACCION_PASOS:'):
             val_str = line[len('ACCION_PASOS:'):].strip()
             try:
@@ -1714,6 +1881,24 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if message_text:
             await update.message.reply_text(message_text)
         await update.message.reply_text(resp, parse_mode='MarkdownV2')
+    elif action and action["type"] == "consulta":
+        modulo    = action["modulo"]
+        fecha_ini = action["fecha_ini"]
+        fecha_fin = action["fecha_fin"]
+        datos_str = await asyncio.to_thread(_consultar_rango, modulo, fecha_ini, fecha_fin)
+        # Segunda llamada a la IA con los datos reales incluidos
+        msg_con_datos = (
+            f"[Pregunta original del usuario]: {text}\n\n"
+            f"[Datos extraídos del registro]:\n{datos_str}\n\n"
+            "Con estos datos, responde la pregunta del usuario de forma clara y directa."
+        )
+        hist2     = get_ai_history()
+        raw2      = await call_ai(msg_con_datos, hist2)
+        msg2, _   = parse_ai_response(raw2)
+        save_ai_history(hist2, text, raw2)
+        if message_text:
+            await update.message.reply_text(message_text)
+        await update.message.reply_text(msg2)
     elif action and action["type"] == "pasos":
         registrar_pasos(action["valor"])
         meta_pct = round(action["valor"] / META_PASOS_DIARIO * 100)
