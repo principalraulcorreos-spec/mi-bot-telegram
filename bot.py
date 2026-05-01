@@ -1123,9 +1123,10 @@ def generar_reporte_global_mensual(año=None, mes=None):
     # --- HÁBITOS ---
     stats = get_stats_habs(año, mes)
     total_dias = stats["total_dias"]
-    gym_dias      = stats.get("gym", 0)
-    comida_dias   = stats.get("comida_casa", 0)
-    trading_dias  = stats.get("trading_plan", 0)
+    gym_dias       = stats.get("gym", 0)
+    comida_dias    = stats.get("comida_casa", 0)
+    trading_dias   = stats.get("trading_plan", 0)
+    templanza_dias = stats.get("templanza", 0)
 
     meta_gym = 20  # meta mensual de gym
     gym_pct  = gym_dias / meta_gym * 100 if meta_gym else 0
@@ -1137,6 +1138,9 @@ def generar_reporte_global_mensual(año=None, mes=None):
 
     comida_pct = round(comida_dias / total_dias * 100) if total_dias else 0
     comida_icon = "✅" if comida_pct >= 80 else "⚠️" if comida_pct >= 50 else "🔴"
+
+    templanza_pct  = round(templanza_dias / total_dias * 100) if total_dias else 0
+    templanza_icon = "✅" if templanza_pct >= 80 else "⚠️" if templanza_pct >= 50 else "🔴"
 
     # --- FOTOS / TRADES ---
     data  = load_data()
@@ -1187,9 +1191,10 @@ def generar_reporte_global_mensual(año=None, mes=None):
         f"  {balance_icon} *Balance: {balance_e}*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💪 *HÁBITOS*\n"
-        f"  {gym_icon} Gym: {gym_dias} días \\({escape_md(str(gym_sem))} días/semana en promedio\\)\n"
+        f"  {gym_icon} Gym: {gym_dias} días \\({escape_md(str(gym_sem))} días/semana\\)\n"
         f"  {comida_icon} Comida en casa: {comida_dias} días \\({comida_pct}%\\)\n"
         f"  📈 Trading según plan: {trading_dias} días\n"
+        f"  {templanza_icon} Templanza: {templanza_dias} días \\({templanza_pct}%\\)\n"
         f"  📅 Check\\-ins registrados: {total_dias} días\n"
         f"{trades_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1817,6 +1822,7 @@ HÁBITOS ESTE MES (días registrados: {total_dias}):
   gym: {gym_dias} días | {habitos_resumen.get('gym','sin datos')} (últimos 7 días)
   comida en casa: {comida_dias} días | {habitos_resumen.get('comida_casa','sin datos')} (últimos 7 días)
   trading según plan: {stats_habs.get('trading_plan',0)} días | {habitos_resumen.get('trading_plan','sin datos')} (últimos 7 días)
+  templanza (no masturbación): {stats_habs.get('templanza',0)} días | {habitos_resumen.get('templanza','sin datos')} (últimos 7 días)
 
 TRADES:
 - Abierto: {open_str}
