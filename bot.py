@@ -3706,6 +3706,149 @@ def get_calendar_context() -> str:
 
 
 # ------------------------------------
+# GOOGLE FIT — SAMSUNG WATCH 7
+# ------------------------------------
+
+def _get_fitness_service():
+    """Construye el servicio Google Fit con GOOGLE_FIT_REFRESH_TOKEN."""
+    try:
+        from google.oauth2.credentials import Credentials
+        import google.auth.transport.requests
+        import googleapiclient.discovery
+
+        client_id     = os.environ.get("GMAIL_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
+        refresh_token = os.environ.get("GOOGLE_FIT_REFRESH_TOKEN", "").strip().lstrip("=")
+        if not refresh_token or not client_id:
+            return None
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=[
+                'https://www.googleapis.com/auth/fitness.activity.read',
+                'https://www.googleapis.com/auth/fitness.body.read',
+            ],
+        )
+        req = google.auth.transport.requests.Request()
+        creds.refresh(req)
+        return googleapiclient.discovery.build('fitness', 'v1', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        logger.warning(f"Fitness service error: {e}")
+        return None
+
+
+def _fetch_fit_data_sync(date_str: str = None) -> dict:
+    """Trae pasos y calorías de Google Fit para una fecha (YYYY-MM-DD)."""
+    service = _get_fitness_service()
+    if not service:
+        return {}
+
+    if not date_str:
+        date_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+
+    day   = datetime.strptime(date_str, "%Y-%m-%d")
+    start = TIMEZONE.localize(day.replace(hour=0,  minute=0,  second=0,  microsecond=0))
+    end   = TIMEZONE.localize(day.replace(hour=23, minute=59, second=59, microsecond=0))
+    start_ms = int(start.timestamp() * 1000)
+    end_ms   = int(end.timestamp()   * 1000)
+
+    body = {
+        "aggregateBy": [
+            {"dataTypeName": "com.google.step_count.delta"},
+            {"dataTypeName": "com.google.calories.expended"},
+        ],
+        "bucketByTime": {"durationMillis": end_ms - start_ms},
+        "startTimeMillis": start_ms,
+        "endTimeMillis":   end_ms,
+    }
+
+    try:
+        resp = service.users().dataset().aggregate(userId="me", body=body).execute()
+    except Exception as e:
+        logger.warning(f"Fitness API error: {e}")
+        return {}
+
+    pasos = 0; calorias = 0.0
+    for bucket in resp.get("bucket", []):
+        for dataset in bucket.get("dataset", []):
+            src = dataset.get("dataSourceId", "")
+            for point in dataset.get("point", []):
+                for val in point.get("value", []):
+                    v = val.get("intVal") or val.get("fpVal") or 0
+                    if "step_count" in src:
+                        pasos += int(v)
+                    elif "calories" in src:
+                        calorias += float(v)
+
+    return {"pasos": pasos, "calorias": int(calorias)}
+
+
+async def job_sync_fit(context: ContextTypes.DEFAULT_TYPE):
+    """10pm Mexico — sincroniza pasos y calorías del día desde Google Fit (Samsung Watch)."""
+    if not os.environ.get("GOOGLE_FIT_REFRESH_TOKEN"):
+        return
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    try:
+        datos = await asyncio.to_thread(_fetch_fit_data_sync)
+        if not datos:
+            return
+        pasos = datos.get("pasos", 0)
+        cal   = datos.get("calorias", 0)
+        if pasos > 0:
+            registrar_pasos(pasos)
+        if cal > 0:
+            registrar_calorias(cal)
+        if pasos > 0 or cal > 0:
+            meta_pct = round(pasos / META_PASOS_DIARIO * 100) if pasos else 0
+            icon_p   = "✅" if pasos >= META_PASOS_DIARIO else "⚡"
+            await context.bot.send_message(
+                chat_id,
+                f"⌚ *Samsung Watch sincronizado*\n"
+                f"{icon_p} Pasos: *{pasos:,}* ({meta_pct}% de la meta)\n"
+                f"🔥 Calorías quemadas: *{cal}* kcal",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.warning(f"job_sync_fit error: {e}")
+
+
+async def cmd_sync_fit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/sync_fit — sincroniza manualmente Google Fit ahora."""
+    if not os.environ.get("GOOGLE_FIT_REFRESH_TOKEN"):
+        await update.message.reply_text(
+            "Google Fit no configurado.\nNecesitas agregar GOOGLE_FIT_REFRESH_TOKEN en Railway."
+        )
+        return
+    await update.message.reply_text("⌚ Consultando Google Fit...")
+    try:
+        datos = await asyncio.to_thread(_fetch_fit_data_sync)
+        if not datos or (datos.get("pasos", 0) == 0 and datos.get("calorias", 0) == 0):
+            await update.message.reply_text("Sin datos disponibles en Google Fit para hoy.")
+            return
+        pasos = datos.get("pasos", 0)
+        cal   = datos.get("calorias", 0)
+        if pasos > 0:
+            registrar_pasos(pasos)
+        if cal > 0:
+            registrar_calorias(cal)
+        meta_pct = round(pasos / META_PASOS_DIARIO * 100) if pasos else 0
+        icon_p   = "✅" if pasos >= META_PASOS_DIARIO else "⚡"
+        await update.message.reply_text(
+            f"⌚ *Google Fit sincronizado*\n"
+            f"{icon_p} Pasos: *{pasos:,}* ({meta_pct}% meta)\n"
+            f"🔥 Calorías: *{cal}* kcal",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Error al sincronizar: {e}")
+
+
+# ------------------------------------
 # GMAIL — DETECCIÓN DE TRANSACCIONES
 # ------------------------------------
 
@@ -4640,6 +4783,7 @@ def main():
     app.add_handler(CommandHandler("peso",          cmd_peso))
     app.add_handler(CommandHandler("salud",         cmd_salud))
     app.add_handler(CommandHandler("rutina",        cmd_rutina))
+    app.add_handler(CommandHandler("sync_fit",      cmd_sync_fit))
     app.add_handler(CommandHandler("recordatorio",  cmd_recordatorio))
     app.add_handler(CommandHandler("borrar_rec",    cmd_borrar_rec))
     app.add_handler(CommandHandler("test",      cmd_test))
@@ -4677,6 +4821,9 @@ def main():
     jq.run_daily(job_aviso_analisis_semanal, time=dt_time(12, 30, tzinfo=mx), name="analisis_semanal")
     # Corte de cabello: sábados 9am (verifica si es la semana)
     jq.run_daily(job_aviso_corte_cabello, time=dt_time(9, 0, tzinfo=mx), name="corte_cabello")
+    # Google Fit sync: 10pm si el token está configurado
+    if os.environ.get("GOOGLE_FIT_REFRESH_TOKEN"):
+        jq.run_daily(job_sync_fit, time=dt_time(22, 0, tzinfo=mx), name="fit_sync")
 
     # Recordatorio del reloj (miércoles 2026-04-30 10am) — solo si no existe
     _data = load_data()
