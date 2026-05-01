@@ -71,6 +71,7 @@ HABITOS = [
     ("gym",          "💪 ¿Hiciste gym hoy?"),
     ("comida_casa",  "🍽 ¿Comiste en casa según lo planeado?"),
     ("trading_plan", "📈 ¿Respetaste tu estrategia de trading hoy?"),
+    ("templanza",    "🧠 ¿Lograste no masturbarte hoy?"),
 ]
 
 # ------------------------------------
