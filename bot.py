@@ -1536,6 +1536,8 @@ def generar_habitos_mes():
         c = "✅" if h["respuestas"].get("comida_casa") else "❌"
         t = "✅" if h["respuestas"].get("trading_plan") else "❌"
         detalle += f"  {fecha}: Gym {g} Comida {c} Trading {t}\n"
+    separator_streak = ("━━━━━━━━━━━━━━━\n" + streak_lines + "\n") if streak_lines else "\n"
+    detalle_txt = detalle if detalle else "  _Sin datos_"
     return (
         f"💪 *HÁBITOS — {mes_esc}*\n"
         f"━━━━━━━━━━━━━━━\n\n"
@@ -1543,8 +1545,8 @@ def generar_habitos_mes():
         f"{gym_icon} *Gym:* {gym}/{total} días \\({gym_pct}%\\)\n"
         f"{com_icon} *Comida en casa:* {comida}/{total} días \\({comida_pct}%\\)\n"
         f"{trd_icon} *Trading según plan:* {trading}/{total} días \\({trd_pct}%\\)\n"
-        f"{('━━━━━━━━━━━━━━━\n' + streak_lines) if streak_lines else ''}\n"
-        f"*Últimos 7 días:*\n{detalle if detalle else '  _Sin datos_'}"
+        f"{separator_streak}"
+        f"*Últimos 7 días:*\n{detalle_txt}"
     )
 
 # ------------------------------------
