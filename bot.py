@@ -348,9 +348,10 @@ def load_data():
         data.setdefault("trade_pending", None)
         data.setdefault("trade_fotos", [])
         data.setdefault("recordatorios", [])
-        data.setdefault("pasos", [])       # [{fecha, valor}]
-        data.setdefault("calorias", [])    # [{fecha, valor}]
+        data.setdefault("pasos", [])
+        data.setdefault("calorias", [])
         data.setdefault("meta_calorias", META_CAL_BASE)
+        data.setdefault("gmail_ingreso_pending", {})
         return data
     return {
         "registros": [], "chat_id": None, "flow": None, "esperando": None,
@@ -2642,7 +2643,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("❌ _Ignorado\\._", parse_mode='MarkdownV2')
 
         elif tipo == "movimiento":
-            registrar_movimiento(monto, comercio or tx.get("descripcion", "movimiento"))
+            # Hacer todo en una sola transacción para evitar sobreescritura
+            d.setdefault("movimientos", [])
+            d["movimientos"].append({
+                "fecha":       datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
+                "cantidad":    float(monto),
+                "descripcion": comercio or tx.get("descripcion", "movimiento"),
+            })
             pending.pop(short_id, None)
             d["gmail_pending"] = pending
             save_data(d)
@@ -2652,13 +2659,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif tipo == "ingreso":
-            registrar_ingreso(monto, "ingreso", comercio or tx.get("descripcion", ""))
+            # Mostrar sub-teclado para clasificar el tipo de ingreso
             pending.pop(short_id, None)
             d["gmail_pending"] = pending
+            # Guardar temporalmente el monto en un campo especial para el sub-paso
+            d.setdefault("gmail_ingreso_pending", {})
+            d["gmail_ingreso_pending"][short_id] = {"monto": monto, "comercio": comercio, "descripcion": tx.get("descripcion", "")}
             save_data(d)
+            monto_esc = escape_md(f"${monto:,.2f}")
             await query.message.edit_text(
-                f"💰 *Ingreso registrado*\n_{escape_md(f'${monto:,.2f}')}_",
-                parse_mode='MarkdownV2'
+                f"💰 *{monto_esc}* — ¿Qué tipo de ingreso fue?",
+                parse_mode='MarkdownV2',
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🏠 Renta",           callback_data=f"gi:{short_id}:renta"),
+                        InlineKeyboardButton("🔄 Transferencia",   callback_data=f"gi:{short_id}:transferencia"),
+                    ],
+                    [
+                        InlineKeyboardButton("📈 Rendimientos",    callback_data=f"gi:{short_id}:rendimientos"),
+                        InlineKeyboardButton("💼 Otro",            callback_data=f"gi:{short_id}:otro"),
+                    ],
+                ])
             )
 
         elif tipo == "gasto":
@@ -2674,31 +2695,49 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     elif data.startswith('gi:'):
-        # Nivel 2 Gmail: tipo de ingreso
+        # Nivel 2 Gmail: tipo de ingreso seleccionado
         parts = data.split(':', 2)
         if len(parts) < 3:
             return
-        short_id    = parts[1]
+        short_id     = parts[1]
         tipo_ingreso = parts[2]
 
         d = load_data()
-        pending = d.get("gmail_pending", {})
-        tx = pending.get(short_id)
+        # Buscar en gmail_ingreso_pending (flujo nuevo) o gmail_pending (flujo viejo)
+        ip = d.get("gmail_ingreso_pending", {})
+        tx = ip.get(short_id)
+        if not tx:
+            # fallback: buscar en gmail_pending por compatibilidad
+            tx = d.get("gmail_pending", {}).get(short_id)
         if not tx:
             await query.answer("Ya procesado.")
             return
 
         monto = tx.get("monto", 0)
-        registrar_ingreso(monto, tipo_ingreso, tx.get("comercio", "") or tx.get("descripcion", ""))
-        pending.pop(short_id, None)
-        d["gmail_pending"] = pending
+        desc  = tx.get("comercio", "") or tx.get("descripcion", "")
+
+        # Todo en una sola transacción — sin llamar a registrar_ingreso para evitar sobreescritura
+        d.setdefault("ingresos", [])
+        d["ingresos"].append({
+            "fecha":       datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
+            "cantidad":    float(monto),
+            "tipo":        tipo_ingreso,
+            "descripcion": desc,
+        })
+        # Limpiar pending de ambos flujos
+        ip.pop(short_id, None)
+        d["gmail_ingreso_pending"] = ip
+        gp = d.get("gmail_pending", {})
+        gp.pop(short_id, None)
+        d["gmail_pending"] = gp
         save_data(d)
 
         tipos_label = {"renta": "Renta", "transferencia": "Transferencia recibida",
                        "rendimientos": "Rendimientos", "otro": "Otro ingreso"}
         label = escape_md(tipos_label.get(tipo_ingreso, tipo_ingreso.capitalize()))
+        monto_esc = escape_md(f"${monto:,.2f}")
         await query.message.edit_text(
-            f"💰 *Ingreso registrado*\n_{escape_md(f'${monto:,.2f}')} — {label}_",
+            f"✅ *Ingreso registrado*\n_{monto_esc} — {label}_",
             parse_mode='MarkdownV2'
         )
 
@@ -2727,16 +2766,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("❌ _Ignorado\\._", parse_mode='MarkdownV2')
             return
 
-        registrar_gasto(monto, categoria, comercio=comercio)
+        # Todo en una sola transacción para evitar sobreescritura
+        cat_normalizada = CATEGORIAS_ALIAS.get(categoria.lower(), categoria.lower())
+        d.setdefault("gastos", [])
+        d["gastos"].append({
+            "fecha":     datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
+            "cantidad":  float(monto),
+            "categoria": cat_normalizada,
+            "comercio":  comercio,
+        })
         pending.pop(short_id, None)
         d["gmail_pending"] = pending
         save_data(d)
-        cat_esc   = escape_md(categoria.capitalize())
+        cat_esc   = escape_md(cat_normalizada.capitalize())
         monto_esc = escape_md(f"${monto:,.2f}")
         await query.message.edit_text(
             f"✅ *{monto_esc} en {cat_esc} registrado*",
             parse_mode='MarkdownV2'
         )
+        # Alertas de presupuesto
+        presup = PRESUPUESTO.get(cat_normalizada)
+        if presup:
+            total_cat = sum(g["cantidad"] for g in d.get("gastos", [])
+                           if g["categoria"] == cat_normalizada
+                           and g["fecha"].startswith(datetime.now(TIMEZONE).strftime("%Y-%m")))
+            pct = total_cat / presup * 100
+            if pct >= 100:
+                await query.message.reply_text(
+                    f"🚨 *¡Superaste el presupuesto de {cat_esc}\\!*\n_${total_cat:.0f} de ${presup} \\({pct:.0f}%\\)_",
+                    parse_mode='MarkdownV2'
+                )
+            elif pct >= 80:
+                await query.message.reply_text(
+                    f"⚠️ *Alerta: {cat_esc} al {pct:.0f}%*\n_${total_cat:.0f} de ${presup}_",
+                    parse_mode='MarkdownV2'
+                )
         alert = check_budget_alert(categoria)
         if alert:
             await query.message.reply_text(alert, parse_mode='MarkdownV2')
