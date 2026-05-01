@@ -298,11 +298,7 @@ def finanzas_keyboard():
 def trading_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📋 Ver trades",        callback_data='trades'),
             InlineKeyboardButton("📸 Fotos de trades",   callback_data='fotos_trades'),
-        ],
-        [
-            InlineKeyboardButton("🎯 Estadísticas",      callback_data='trd_stats'),
         ],
         [_volver()[0]],
     ])
@@ -337,7 +333,6 @@ def reportes_keyboard():
         ],
         [
             InlineKeyboardButton("💪 Hábitos del mes",   callback_data='rep_habitos'),
-            InlineKeyboardButton("📈 Trading del mes",   callback_data='rep_trading'),
         ],
         [_volver()[0]],
     ])
