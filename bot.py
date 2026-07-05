@@ -10,6 +10,7 @@ from datetime import datetime, time as dt_time, timedelta
 from calendar import monthcalendar, FRIDAY
 
 import pytz
+import requests
 from groq import Groq
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,6 +26,15 @@ TIMEZONE   = pytz.timezone('America/Mexico_City')
 DATA_DIR   = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE  = os.path.join(DATA_DIR, "registro.json")
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
+
+# Almacenamiento persistente en Supabase (Postgres gratis) en vez de archivo local.
+# Render usa DATA_DIR=/tmp, que se borra en cada redeploy/reinicio; esto arregla
+# los duplicados de Gmail (gmail_processed_ids) y la pérdida de todo lo demás.
+# Si estas variables no están configuradas, se usa el archivo local (dev/testing).
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_KEY)
+SUPABASE_TABLE_URL = f"{SUPABASE_URL}/rest/v1/bot_data" if SUPABASE_ENABLED else None
 
 # Tiempo máximo que una confirmación pendiente (botón Sí/No) sigue siendo válida.
 # Pasado este tiempo, un botón viejo ya no ejecuta la acción (evita duplicados/confusión).
@@ -405,41 +415,78 @@ def estrategia_keyboard():
 # STORAGE
 # ------------------------------------
 
-def load_data():
+def _supabase_headers(extra=None):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    if extra:
+        headers.update(extra)
+    return headers
+
+def _load_raw_data():
+    """Lee el JSON crudo desde Supabase (persistente) o desde el archivo local (fallback
+    para desarrollo o si Supabase no está configurado)."""
+    if SUPABASE_ENABLED:
+        try:
+            resp = requests.get(
+                SUPABASE_TABLE_URL,
+                params={"id": "eq.1", "select": "data"},
+                headers=_supabase_headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0]["data"] if rows else {}
+        except Exception as e:
+            logger.error(f"No se pudo leer de Supabase ({e}), usando datos vacíos")
+            return {}
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+                return json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"registro.json corrupto o ilegible ({e}), iniciando datos vacíos")
-            data = {}
-        data.setdefault("gastos", [])
-        data.setdefault("habitos", [])
-        data.setdefault("habito_flow", None)
-        data.setdefault("ai_history", [])
-        data.setdefault("ai_last_message", None)
-        data.setdefault("pending_action", None)
-        data.setdefault("trades", [])
-        data.setdefault("notas", [])
-        data.setdefault("trade_pending", None)
-        data.setdefault("trade_fotos", [])
-        data.setdefault("recordatorios", [])
-        data.setdefault("pasos", [])
-        data.setdefault("calorias", [])
-        data.setdefault("meta_calorias", META_CAL_BASE)
-        data.setdefault("gmail_ingreso_pending", {})
-        return data
-    return {
-        "registros": [], "chat_id": None, "flow": None, "esperando": None,
-        "gastos": [], "habitos": [], "habito_flow": None,
-        "ai_history": [], "ai_last_message": None, "pending_action": None,
-        "trades": [], "notas": [], "trade_pending": None, "trade_fotos": [],
-        "recordatorios": [], "pasos": [], "calorias": [], "meta_calorias": META_CAL_BASE,
-    }
+            return {}
+    return {}
+
+def load_data():
+    data = _load_raw_data()
+    data.setdefault("registros", [])
+    data.setdefault("chat_id", None)
+    data.setdefault("flow", None)
+    data.setdefault("esperando", None)
+    data.setdefault("gastos", [])
+    data.setdefault("habitos", [])
+    data.setdefault("habito_flow", None)
+    data.setdefault("ai_history", [])
+    data.setdefault("ai_last_message", None)
+    data.setdefault("pending_action", None)
+    data.setdefault("trades", [])
+    data.setdefault("notas", [])
+    data.setdefault("trade_pending", None)
+    data.setdefault("trade_fotos", [])
+    data.setdefault("recordatorios", [])
+    data.setdefault("pasos", [])
+    data.setdefault("calorias", [])
+    data.setdefault("meta_calorias", META_CAL_BASE)
+    data.setdefault("gmail_ingreso_pending", {})
+    return data
 
 def save_data(data):
-    """Escritura atómica: escribe a un archivo temporal y hace rename.
-    Evita registro.json corrupto si el proceso se reinicia a media escritura."""
+    """Guarda en Supabase (persistente entre redeploys) si está configurado; si no,
+    escritura atómica local (tmp+rename) para evitar registro.json corrupto."""
+    if SUPABASE_ENABLED:
+        try:
+            resp = requests.patch(
+                SUPABASE_TABLE_URL,
+                params={"id": "eq.1"},
+                headers=_supabase_headers({"Content-Type": "application/json", "Prefer": "return=minimal"}),
+                json={"data": data},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return
+        except Exception as e:
+            logger.error(f"No se pudo guardar en Supabase ({e}), guardando copia local de respaldo")
+            # continúa abajo: guarda copia local como respaldo para no perder el registro
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp_file = DATA_FILE + ".tmp"
     with open(tmp_file, 'w', encoding='utf-8') as f:
