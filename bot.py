@@ -26,6 +26,10 @@ DATA_DIR   = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__
 DATA_FILE  = os.path.join(DATA_DIR, "registro.json")
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
+# Tiempo máximo que una confirmación pendiente (botón Sí/No) sigue siendo válida.
+# Pasado este tiempo, un botón viejo ya no ejecuta la acción (evita duplicados/confusión).
+PENDING_ACTION_TTL_SECONDS = 15 * 60
+
 # ------------------------------------
 # UTILIDADES (primero — todo lo usa)
 # ------------------------------------
@@ -368,6 +372,13 @@ def confirm_keyboard():
         ]
     ])
 
+def undo_keyboard(tipo, token):
+    """Botón deshacer para acciones que el bot auto-ejecuta sin pedir confirmación
+    (nota/pasos/calorías/peso). token identifica la entrada exacta a borrar."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("↩️ Deshacer", callback_data=f'undo:{tipo}:{token}')]
+    ])
+
 def trade_confirm_keyboard():
     return InlineKeyboardMarkup([
         [
@@ -396,8 +407,12 @@ def estrategia_keyboard():
 
 def load_data():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"registro.json corrupto o ilegible ({e}), iniciando datos vacíos")
+            data = {}
         data.setdefault("gastos", [])
         data.setdefault("habitos", [])
         data.setdefault("habito_flow", None)
@@ -423,9 +438,13 @@ def load_data():
     }
 
 def save_data(data):
+    """Escritura atómica: escribe a un archivo temporal y hace rename.
+    Evita registro.json corrupto si el proceso se reinicia a media escritura."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+    tmp_file = DATA_FILE + ".tmp"
+    with open(tmp_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_file, DATA_FILE)
 
 def get_chat_id():
     # Primero intenta desde registro.json, luego variable de entorno CHAT_ID
@@ -609,11 +628,10 @@ def registrar_habito(respuestas):
 
 def guardar_nota(texto):
     data = load_data()
-    data["notas"].append({
-        "fecha": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
-        "texto": texto,
-    })
+    fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    data["notas"].append({"fecha": fecha, "texto": texto})
     save_data(data)
+    return fecha
 
 def get_open_trade():
     trades = load_data().get("trades", [])
@@ -683,10 +701,27 @@ def save_ai_history(history, user_msg, assistant_msg):
     save_data(data)
 
 def set_pending_action(action):
-    data = load_data(); data["pending_action"] = action; save_data(data)
+    data = load_data()
+    data["pending_action"] = {"action": action, "ts": datetime.now(TIMEZONE).isoformat()}
+    save_data(data)
 
 def get_pending_action():
-    return load_data().get("pending_action")
+    """Devuelve la acción pendiente, o None si ya expiró (evita que un botón
+    de confirmación viejo dispare sobre una acción que ya no aplica)."""
+    entry = load_data().get("pending_action")
+    if not entry:
+        return None
+    if "action" not in entry or "ts" not in entry:
+        return entry  # compatibilidad con formato antiguo
+    try:
+        ts = datetime.fromisoformat(entry["ts"])
+        if ts.tzinfo is None:
+            ts = TIMEZONE.localize(ts)
+        if (datetime.now(TIMEZONE) - ts).total_seconds() > PENDING_ACTION_TTL_SECONDS:
+            return None
+    except Exception:
+        pass
+    return entry["action"]
 
 def clear_pending_action():
     data = load_data(); data["pending_action"] = None; save_data(data)
@@ -2090,10 +2125,11 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         resp_text = f"{message_text}\n\n🤔 _{pregunta_esc}_" if message_text else f"🤔 _{pregunta_esc}_"
         await update.message.reply_text(resp_text, parse_mode='MarkdownV2')
     elif action and action["type"] == "nota":
-        guardar_nota(action["texto"])
+        nota_fecha = guardar_nota(action["texto"])
         await update.message.reply_text(
             f"{message_text}\n\n📝 _Nota guardada\\._",
-            parse_mode='MarkdownV2'
+            parse_mode='MarkdownV2',
+            reply_markup=undo_keyboard('nota', nota_fecha)
         )
     elif action and action["type"] == "cal_ver":
         dias   = action["dias"]
@@ -2139,18 +2175,22 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         meta_pct = round(action["valor"] / META_PASOS_DIARIO * 100)
         icon = "✅" if action["valor"] >= META_PASOS_DIARIO else "⚡"
         resp = f"{icon} *{action['valor']:,} pasos registrados* \\({meta_pct}% de la meta\\)"
+        fecha_hoy = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
         if message_text:
             await update.message.reply_text(message_text)
-        await update.message.reply_text(resp, parse_mode='MarkdownV2')
+        await update.message.reply_text(resp, parse_mode='MarkdownV2',
+                                         reply_markup=undo_keyboard('pasos', fecha_hoy))
     elif action and action["type"] == "calorias":
         registrar_calorias(action["valor"])
         data_sal = load_data()
         meta_c = data_sal.get("meta_calorias", META_CAL_BASE)
         icon = "🔥" if action["valor"] >= meta_c * 0.3 else "⚡"
         resp = f"{icon} *{action['valor']} kcal quemadas* registradas"
+        fecha_hoy = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
         if message_text:
             await update.message.reply_text(message_text)
-        await update.message.reply_text(resp, parse_mode='MarkdownV2')
+        await update.message.reply_text(resp, parse_mode='MarkdownV2',
+                                         reply_markup=undo_keyboard('calorias', fecha_hoy))
     else:
         await update.message.reply_text(message_text)
 
@@ -2383,8 +2423,11 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                     reply_markup=confirm_keyboard()
                 )
             elif action and action["type"] == "nota":
-                guardar_nota(action["texto"])
-                await update.message.reply_text(f"{message_text}\n\n📝 Nota guardada.")
+                nota_fecha = guardar_nota(action["texto"])
+                await update.message.reply_text(
+                    f"{message_text}\n\n📝 Nota guardada.",
+                    reply_markup=undo_keyboard('nota', nota_fecha)
+                )
             else:
                 await update.message.reply_text(message_text)
         return
@@ -2496,9 +2539,10 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # 3.6. Detección natural de peso: "peso 78", "hoy pesé 78.5", "me pese 80"
     import re as _re
-    _peso_match = _re.search(r'pes[oéeé]\s+(\d+(?:[.,]\d+)?)', _tl)
+    _peso_match = _re.search(r'\bpes[oée]\s+(\d+(?:[.,]\d+)?)', _tl)
     if not _peso_match:
-        _peso_match = _re.search(r'(\d+(?:[.,]\d+)?)\s*kg', _tl)
+        # "N kg" pero no "N kg de <algo>" (evita confundir compras: "2 kg de arroz")
+        _peso_match = _re.search(r'\b(\d+(?:[.,]\d+)?)\s*kg\b(?!\s*(?:de|d[eé])\b)', _tl)
     if _peso_match:
         try:
             valor = float(_peso_match.group(1).replace(',', '.'))
@@ -2512,7 +2556,8 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 d["peso"].sort(key=lambda x: x["fecha"])
                 save_data(d)
                 texto = _formato_peso(d["peso"])
-                await update.message.reply_text(texto, parse_mode='MarkdownV2')
+                await update.message.reply_text(texto, parse_mode='MarkdownV2',
+                                                 reply_markup=undo_keyboard('peso', fecha))
                 return
         except (ValueError, AttributeError):
             pass
@@ -2531,9 +2576,11 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 registrar_pasos(val)
                 meta_pct = round(val / META_PASOS_DIARIO * 100)
                 icon = "✅" if val >= META_PASOS_DIARIO else "⚡"
+                fecha_hoy = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
                 await update.message.reply_text(
                     f"{icon} *{val:,} pasos* registrados \\({meta_pct}% de la meta diaria\\)",
-                    parse_mode='MarkdownV2'
+                    parse_mode='MarkdownV2',
+                    reply_markup=undo_keyboard('pasos', fecha_hoy)
                 )
                 return
         except (ValueError, TypeError):
@@ -2551,9 +2598,11 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
             val = int(float(raw))
             if 50 <= val <= 10000:
                 registrar_calorias(val)
+                fecha_hoy = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
                 await update.message.reply_text(
                     f"🔥 *{val} kcal quemadas* registradas",
-                    parse_mode='MarkdownV2'
+                    parse_mode='MarkdownV2',
+                    reply_markup=undo_keyboard('calorias', fecha_hoy)
                 )
                 return
         except (ValueError, TypeError):
@@ -3126,6 +3175,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending_action()
         await query.answer("Ok, no se registró nada.")
 
+    elif data.startswith('undo:'):
+        _, tipo, token = data.split(':', 2)
+        d = load_data()
+        if tipo == 'pasos':
+            d['pasos'] = [p for p in d.get('pasos', []) if p['fecha'] != token]
+        elif tipo == 'calorias':
+            d['calorias'] = [c for c in d.get('calorias', []) if c['fecha'] != token]
+        elif tipo == 'peso':
+            d['peso'] = [p for p in d.get('peso', []) if p['fecha'] != token]
+        elif tipo == 'nota':
+            d['notas'] = [n for n in d.get('notas', []) if n['fecha'] != token]
+        save_data(d)
+        await query.answer("↩️ Deshecho")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.message.reply_text("↩️ Se deshizo el registro anterior.")
+
     elif data == 'trade_si':
         tp = get_trade_pending()
         if not tp: return
@@ -3436,6 +3504,58 @@ async def job_enviar_informe(context: ContextTypes.DEFAULT_TYPE):
         chat_id = get_chat_id()
         if chat_id:
             await context.bot.send_message(chat_id, ENVIAR_INFORME, parse_mode='MarkdownV2')
+
+async def job_briefing_matutino(context: ContextTypes.DEFAULT_TYPE):
+    """Briefing unificado 6:15am: agenda + finanzas + hábitos + salud en un solo
+    mensaje, para tener el panorama completo del día sin revisar cada módulo aparte."""
+    chat_id = get_chat_id()
+    if not chat_id:
+        return
+    try:
+        data = load_data()
+        now  = datetime.now(TIMEZONE)
+
+        try:
+            eventos    = await asyncio.to_thread(_listar_eventos_sync, 1)
+            agenda_txt = formatear_eventos(eventos)
+        except Exception:
+            agenda_txt = "_Agenda no disponible\\._"
+
+        gastos_mes    = get_gastos_mes()
+        total_gastado = sum(g["cantidad"] for g in gastos_mes)
+        total_presup  = sum(PRESUPUESTO.values())
+        pct_mes       = (total_gastado / total_presup * 100) if total_presup else 0
+
+        streaks = get_streaks()
+        streak_lines = []
+        for clave, label in HABITOS:
+            s = streaks.get(clave, 0)
+            if s >= 2:
+                short = label.split('¿')[-1].rstrip('?').strip() if '¿' in label else label
+                streak_lines.append(f"{escape_md(short)}: {s}🔥")
+        streak_txt = ", ".join(streak_lines) if streak_lines else "_sin rachas activas_"
+
+        salud_hoy = get_salud_hoy()
+        salud_sem = get_salud_semana()
+        peso_txt  = f"{salud_hoy['peso']:.1f} kg" if salud_hoy["peso"] else "sin registrar"
+        pasos_avg = f"{salud_sem['avg_pasos']:,}" if salud_sem["avg_pasos"] else "—"
+
+        recs_activos = len([r for r in data.get("recordatorios", []) if r.get("activo", True)])
+
+        texto = (
+            f"☀️ *BUENOS DÍAS, RAÚL* — {escape_md(now.strftime('%A %d/%m'))}\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"📅 *Agenda de hoy:*\n{agenda_txt}\n\n"
+            f"💰 *Mes:* ${total_gastado:.0f} gastados \\({pct_mes:.0f}% del presupuesto total\\)\n\n"
+            f"💪 *Rachas:* {streak_txt}\n\n"
+            f"⚖️ *Salud:* {escape_md(peso_txt)} · pasos/día \\(prom\\.\\): {escape_md(pasos_avg)}\n\n"
+            f"⏰ *Recordatorios activos:* {recs_activos}\n\n"
+            f"_Vamos con todo hoy\\._"
+        )
+        await context.bot.send_message(chat_id, texto, parse_mode='MarkdownV2')
+    except Exception as e:
+        logger.error(f"job_briefing_matutino error: {e}")
+
 
 async def job_habitos(context: ContextTypes.DEFAULT_TYPE):
     chat_id = get_chat_id()
@@ -4611,11 +4731,36 @@ async def job_check_recordatorios(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------------
+# MANEJO GLOBAL DE ERRORES
+# ------------------------------------
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Captura cualquier excepción no manejada en un handler/job.
+    Sin esto, un error se perdía en el log y el usuario se quedaba sin
+    respuesta (sensación de 'no hay lógica' / bot que no reacciona)."""
+    logger.error("Excepción no manejada", exc_info=context.error)
+    try:
+        chat_id = None
+        if isinstance(update, Update) and update.effective_chat:
+            chat_id = update.effective_chat.id
+        else:
+            chat_id = get_chat_id()
+        if chat_id:
+            await context.bot.send_message(
+                chat_id,
+                "⚠️ Tuve un error procesando eso. Ya quedó registrado en el log, intenta de nuevo."
+            )
+    except Exception:
+        pass  # si ni siquiera se puede avisar, no hay más que hacer aquí
+
+
+# ------------------------------------
 # MAIN
 # ------------------------------------
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    app.add_error_handler(error_handler)
 
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("menu",      cmd_menu))
@@ -4658,6 +4803,7 @@ def main():
     jq.run_daily(job_pedir_informe,  time=dt_time(20, 30, tzinfo=mx),            name="pedir_informe")
     jq.run_daily(job_habitos,        time=dt_time(21, 0,  tzinfo=mx),            name="habitos")
     jq.run_daily(job_forex_news,     time=dt_time(6,  0,  tzinfo=mx),            name="forex_news")
+    jq.run_daily(job_briefing_matutino, time=dt_time(6, 15, tzinfo=mx),          name="briefing_matutino")
     # Día 1 de cada mes:
     jq.run_daily(job_reporte_mensual,         time=dt_time(9,  0,  tzinfo=mx), name="reporte_mensual")
     jq.run_daily(job_reporte_sofia_mensual,   time=dt_time(21, 0,  tzinfo=mx), name="sofia_mensual")
