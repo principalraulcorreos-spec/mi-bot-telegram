@@ -127,12 +127,13 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Guardar el mensaje original y preguntar para clarificar
         set_razonar_pending(text, action["pregunta"])
         pregunta_esc = escape_md(action["pregunta"])
-        resp_text = f"{message_text}\n\n🤔 _{pregunta_esc}_" if message_text else f"🤔 _{pregunta_esc}_"
+        msg_esc = escape_md(message_text) if message_text else ""
+        resp_text = f"{msg_esc}\n\n🤔 _{pregunta_esc}_" if message_text else f"🤔 _{pregunta_esc}_"
         await update.message.reply_text(resp_text, parse_mode='MarkdownV2')
     elif action and action["type"] == "nota":
         nota_fecha = guardar_nota(action["texto"])
         await update.message.reply_text(
-            f"{message_text}\n\n📝 _Nota guardada\\._",
+            f"{escape_md(message_text)}\n\n📝 _Nota guardada\\._",
             parse_mode='MarkdownV2',
             reply_markup=undo_keyboard('nota', nota_fecha)
         )
@@ -153,7 +154,7 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if ok:
             resp = f"✅ *{titulo_esc}* agendado para _{fecha_esc}_"
         else:
-            resp = "No pude crear el evento. Verifica que el calendario esté conectado."
+            resp = escape_md("No pude crear el evento. Verifica que el calendario esté conectado.")
         if message_text:
             await update.message.reply_text(message_text)
         await update.message.reply_text(resp, parse_mode='MarkdownV2')
