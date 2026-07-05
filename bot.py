@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 import base64
+import copy
 import json
 import logging
 import os
 import re
 import random
 import asyncio
+import time
+import io
 from datetime import datetime, time as dt_time, timedelta
 from calendar import monthcalendar, FRIDAY
 
@@ -421,10 +424,22 @@ def _supabase_headers(extra=None):
         headers.update(extra)
     return headers
 
+# Cache de escritura (write-through) para no pegarle a la red en cada load_data().
+# Un solo mensaje de Telegram puede disparar varios load_data()/save_data() seguidos
+# (uno por cada helper: get_flow, set_chat_id, get_pending_action, etc.); sin esto,
+# cada uno era un round-trip HTTP a Supabase. El TTL es corto a propósito: solo evita
+# ráfagas de llamadas casi simultáneas, no esconde cambios reales por más de unos segundos
+# (los jobs corren cada 60s+, muy por encima del TTL).
+_data_cache = {"value": None, "ts": 0.0}
+_CACHE_TTL_SECONDS = 3
+
 def _load_raw_data():
     """Lee el JSON crudo desde Supabase (persistente) o desde el archivo local (fallback
     para desarrollo o si Supabase no está configurado)."""
     if SUPABASE_ENABLED:
+        now = time.monotonic()
+        if _data_cache["value"] is not None and (now - _data_cache["ts"]) < _CACHE_TTL_SECONDS:
+            return copy.deepcopy(_data_cache["value"])
         try:
             resp = requests.get(
                 SUPABASE_TABLE_URL,
@@ -434,10 +449,13 @@ def _load_raw_data():
             )
             resp.raise_for_status()
             rows = resp.json()
-            return rows[0]["data"] if rows else {}
+            result = rows[0]["data"] if rows else {}
         except Exception as e:
-            logger.error(f"No se pudo leer de Supabase ({e}), usando datos vacíos")
-            return {}
+            logger.error(f"No se pudo leer de Supabase ({e}), usando última copia en cache")
+            result = _data_cache["value"] if _data_cache["value"] is not None else {}
+        _data_cache["value"] = result
+        _data_cache["ts"] = now
+        return copy.deepcopy(result)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -483,6 +501,8 @@ def save_data(data):
                 timeout=10,
             )
             resp.raise_for_status()
+            _data_cache["value"] = copy.deepcopy(data)
+            _data_cache["ts"] = time.monotonic()
             return
         except Exception as e:
             logger.error(f"No se pudo guardar en Supabase ({e}), guardando copia local de respaldo")
@@ -4513,23 +4533,24 @@ async def cmd_rutina(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ------------------------------------
 
 async def job_backup_semanal(context: ContextTypes.DEFAULT_TYPE):
-    """Domingo 9pm México — manda registro.json como documento."""
+    """Domingo 9pm México — manda el registro completo (Supabase o archivo local) como documento."""
     if datetime.now(TIMEZONE).weekday() != 6:  # 6 = domingo
         return
     chat_id = get_chat_id()
     if not chat_id:
         return
-    data_path = os.path.join(DATA_DIR, "registro.json")
-    if not os.path.exists(data_path):
+    data = load_data()
+    if not data:
         return
     fecha = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
-    with open(data_path, 'rb') as f:
-        await context.bot.send_document(
-            chat_id=chat_id,
-            document=f,
-            filename=f"registro_backup_{fecha}.json",
-            caption=f"💾 Backup semanal — {fecha}"
-        )
+    buffer = io.BytesIO(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+    buffer.name = f"registro_backup_{fecha}.json"
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=buffer,
+        filename=f"registro_backup_{fecha}.json",
+        caption=f"💾 Backup semanal — {fecha}"
+    )
 
 
 # ------------------------------------
