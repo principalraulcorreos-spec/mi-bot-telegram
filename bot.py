@@ -109,8 +109,9 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         set_pending_action(action)
         tipo_esc = escape_md(action['tipo'].capitalize())
         monto_esc = escape_md(f"${action['amount']:,.0f}")
+        msg_esc = escape_md(message_text) if message_text else ""
         await update.message.reply_text(
-            f"{message_text}\n\n💰 ¿Registro *{monto_esc}* como ingreso \\({tipo_esc}\\)?",
+            f"{msg_esc}\n\n💰 ¿Registro *{monto_esc}* como ingreso \\({tipo_esc}\\)?",
             parse_mode='MarkdownV2',
             reply_markup=confirm_keyboard()
         )
@@ -118,8 +119,9 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         set_pending_action(action)
         monto_esc = escape_md(f"${action['amount']:,.0f}")
         desc_esc  = escape_md(action['descripcion'])
+        msg_esc = escape_md(message_text) if message_text else ""
         await update.message.reply_text(
-            f"{message_text}\n\n🔄 ¿Registro *{monto_esc}* como movimiento entre cuentas?\n_{desc_esc}_",
+            f"{msg_esc}\n\n🔄 ¿Registro *{monto_esc}* como movimiento entre cuentas?\n_{desc_esc}_",
             parse_mode='MarkdownV2',
             reply_markup=confirm_keyboard()
         )
