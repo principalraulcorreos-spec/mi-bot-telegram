@@ -35,9 +35,16 @@ _data_cache = {"value": None, "ts": 0.0}
 _CACHE_TTL_SECONDS = 3
 
 
+# True solo después de la primera lectura EXITOSA de Supabase en este proceso.
+# Mientras sea False, save_data no escribe a Supabase: evita que un arranque
+# con Supabase caído sobreescriba todo el registro con datos vacíos.
+_read_ok_once = False
+
+
 def _load_raw_data():
     """Lee el JSON crudo desde Supabase (persistente) o desde el archivo local (fallback
     para desarrollo o si Supabase no está configurado)."""
+    global _read_ok_once
     if SUPABASE_ENABLED:
         now = time.monotonic()
         if _data_cache["value"] is not None and (now - _data_cache["ts"]) < _CACHE_TTL_SECONDS:
@@ -52,12 +59,17 @@ def _load_raw_data():
             resp.raise_for_status()
             rows = resp.json()
             result = rows[0]["data"] if rows else {}
+            _read_ok_once = True
+            _data_cache["value"] = result
+            _data_cache["ts"] = now
+            return copy.deepcopy(result)
         except Exception as e:
             logger.error(f"No se pudo leer de Supabase ({e}), usando última copia en cache")
-            result = _data_cache["value"] if _data_cache["value"] is not None else {}
-        _data_cache["value"] = result
-        _data_cache["ts"] = now
-        return copy.deepcopy(result)
+            # NO cachear el resultado de un fallo: cachear {} aquí haría que el
+            # siguiente save_data borrara todo el registro remoto.
+            if _data_cache["value"] is not None:
+                return copy.deepcopy(_data_cache["value"])
+            return {}
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -96,12 +108,21 @@ def save_data(data):
     """Guarda en Supabase (persistente entre redeploys) si está configurado; si no,
     escritura atómica local (tmp+rename) para evitar registro.json corrupto."""
     if SUPABASE_ENABLED:
+        if not _read_ok_once:
+            # Aún no logramos leer el registro real: escribir ahora lo borraría.
+            logger.error("save_data bloqueado: sin lectura exitosa de Supabase en este proceso (protección anti-wipe)")
+            return
         try:
-            resp = requests.patch(
+            # Upsert: crea la fila id=1 si no existe. El PATCH anterior devolvía
+            # 200 con 0 filas afectadas si la fila faltaba (guardado silenciosamente perdido).
+            resp = requests.post(
                 SUPABASE_TABLE_URL,
-                params={"id": "eq.1"},
-                headers=_supabase_headers({"Content-Type": "application/json", "Prefer": "return=minimal"}),
-                json={"data": data},
+                params={"on_conflict": "id"},
+                headers=_supabase_headers({
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates,return=minimal",
+                }),
+                json={"id": 1, "data": data},
                 timeout=10,
             )
             resp.raise_for_status()
