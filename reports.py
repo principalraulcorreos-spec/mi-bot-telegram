@@ -17,8 +17,10 @@ from calendar_service import _listar_eventos_sync
 def generar_resumen_semanal():
     habitos_7  = get_habitos_dias(7)
     cutoff     = (datetime.now(TIMEZONE) - timedelta(days=7)).strftime("%Y-%m-%d")
-    gastos_7   = [g for g in load_data().get("gastos", []) if g["fecha"][:10] >= cutoff]
-    trades_sem = [t for t in load_data().get("trades", [])
+    _data_sem  = load_data()
+    gastos_7   = [g for g in _data_sem.get("gastos", []) if g["fecha"][:10] >= cutoff]
+    ingresos_7 = [i for i in _data_sem.get("ingresos", []) if i["fecha"][:10] >= cutoff]
+    trades_sem = [t for t in _data_sem.get("trades", [])
                   if t.get("fecha_entrada", "")[:10] >= cutoff and t.get("fecha_salida")]
 
     habitos_lines = ""
@@ -35,13 +37,28 @@ def generar_resumen_semanal():
 
     gastos_por_cat = {}
     for g in gastos_7:
-        gastos_por_cat[g["categoria"]] = gastos_por_cat.get(g["categoria"], 0) + g["cantidad"]
+        cat = g.get("categoria") or "otros"
+        gastos_por_cat[cat] = gastos_por_cat.get(cat, 0) + g["cantidad"]
     total_g = sum(gastos_por_cat.values())
     gastos_lines = ""
     for cat, total in sorted(gastos_por_cat.items(), key=lambda x: -x[1]):
         gastos_lines += f"\\- {escape_md(cat.capitalize())}: ${total:.0f}\n"
     if not gastos_lines:
         gastos_lines = "_Sin gastos registrados_\n"
+
+    total_i = sum(i["cantidad"] for i in ingresos_7)
+    ingresos_lines = ""
+    ingresos_por_tipo = {}
+    for i in ingresos_7:
+        t = i.get("tipo") or "otro"
+        ingresos_por_tipo[t] = ingresos_por_tipo.get(t, 0) + i["cantidad"]
+    for t, total in sorted(ingresos_por_tipo.items(), key=lambda x: -x[1]):
+        ingresos_lines += f"\\- {escape_md(t.capitalize())}: ${total:.0f}\n"
+    if not ingresos_lines:
+        ingresos_lines = "_Sin ingresos registrados_\n"
+    balance_sem  = total_i - total_g
+    balance_icon = "✅" if balance_sem >= 0 else "🔴"
+    balance_esc  = escape_md(f"${balance_sem:+,.0f}")
 
     trades_lines = ""
     if trades_sem:
@@ -113,7 +130,10 @@ def generar_resumen_semanal():
         f"{salud_section}"
         f"{trades_lines}\n"
         f"💰 *Gastos de la semana*\n{gastos_lines}"
-        f"Total: ${total_g:.0f}\n"
+        f"Total: ${total_g:.0f}\n\n"
+        f"📥 *Ingresos de la semana*\n{ingresos_lines}"
+        f"Total: ${total_i:.0f}\n\n"
+        f"{balance_icon} *Balance semanal: {balance_esc}*\n"
         f"{agenda_section}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "_Ahora responde honestamente\\. ¿Cómo fue la semana?_ 👇"
