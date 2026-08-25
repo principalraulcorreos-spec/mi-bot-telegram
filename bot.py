@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, time as dt_time, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -1933,7 +1935,35 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         pass  # si ni siquiera se puede avisar, no hay más que hacer aquí
 
 
+# ------------------------------------------------------------- keep-alive
+# Para correr en un Render Web Service (plan gratis): exige escuchar en $PORT
+# y se duerme sin trafico. Un ping externo (UptimeRobot cada 5 min) lo mantiene
+# vivo 24/7. En un Background Worker es inofensivo (PORT no existe -> 10000).
+class _PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def _keep_alive_server():
+    port = int(os.environ.get("PORT", "10000"))
+    try:
+        HTTPServer(("0.0.0.0", port), _PingHandler).serve_forever()
+    except Exception as e:
+        logger.error(f"keep-alive server no pudo arrancar: {e}")
+
+
 def main():
+    threading.Thread(target=_keep_alive_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_error_handler(error_handler)
 
